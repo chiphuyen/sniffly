@@ -1193,11 +1193,11 @@ async def favicon():
     )
 
 
-def start_server_with_args(port=8081):
+def start_server_with_args(port=8081, host="localhost"):
     """Start the server with specified arguments"""
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

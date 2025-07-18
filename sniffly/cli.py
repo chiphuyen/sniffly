@@ -46,9 +46,10 @@ def cli():
 
 @cli.command()
 @click.option("--port", type=int, help="Port to run server on")
+@click.option("--host", type=str, help="Host to bind server to")
 @click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
 @click.option("--clear-cache", is_flag=True, help="Clear all caches before starting")
-def init(port, no_browser, clear_cache):
+def init(port, host, no_browser, clear_cache):
     """Start the analytics dashboard"""
     # Clear cache if requested
     if clear_cache:
@@ -73,6 +74,10 @@ def init(port, no_browser, clear_cache):
     # Use provided port or get from config
     if port is None:
         port = cfg.get("port")
+    
+    # Use provided host or get from config
+    if host is None:
+        host = cfg.get("host")
 
     # Determine if we should open browser
     auto_browser = cfg.get("auto_browser")
@@ -84,7 +89,7 @@ def init(port, no_browser, clear_cache):
     # Start server in background thread
     from .server import start_server_with_args
 
-    server_thread = threading.Thread(target=start_server_with_args, args=(port,), daemon=True)
+    server_thread = threading.Thread(target=start_server_with_args, args=(port, host), daemon=True)
     server_thread.start()
 
     # Wait for server to start
@@ -92,12 +97,12 @@ def init(port, no_browser, clear_cache):
 
     # Open browser
     if should_open_browser:
-        url = f"http://localhost:{port}"
+        url = f"http://{host}:{port}"
         # Delay browser opening slightly to ensure server is ready
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
         click.echo(f"✨ Sniffly dashboard opened at {url}")
     else:
-        click.echo(f"✨ Sniffly running at http://localhost:{port}")
+        click.echo(f"✨ Sniffly running at http://{host}:{port}")
 
     click.echo("Press Ctrl+C to stop the server")
 
@@ -206,6 +211,9 @@ Usage Examples:
   
   # Start on a different port
   sniffly init --port 8090
+  
+  # Start on a different host
+  sniffly init --host 0.0.0.0
   
   # Start without opening browser
   sniffly init --no-browser
