@@ -4,15 +4,37 @@
 
 // Date and Time Calculations
 function calculateDateRange(statistics) {
+  // Handle null date range (common for rollups)
+  if (!statistics.overview.date_range.start || !statistics.overview.date_range.end) {
+    return '0 days';
+  }
+  
   const start = new Date(statistics.overview.date_range.start);
   const end = new Date(statistics.overview.date_range.end);
+  
+  // Check for invalid dates
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return '0 days';
+  }
+  
   const days = Math.floor((end - start) / (24 * 60 * 60 * 1000));
   return `${days} days`;
 }
 
 function calculateDaysInclusive(statistics) {
+  // Handle null date range (common for rollups)
+  if (!statistics.overview.date_range.start || !statistics.overview.date_range.end) {
+    return 0;
+  }
+  
   const start = new Date(statistics.overview.date_range.start);
   const end = new Date(statistics.overview.date_range.end);
+  
+  // Check for invalid dates
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return 0;
+  }
+  
   // Add 1 to make it inclusive (e.g., Jun 26 to Jun 28 = 3 days)
   const days = Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
   return days;

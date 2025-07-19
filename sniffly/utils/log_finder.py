@@ -171,3 +171,83 @@ def get_all_projects_with_metadata() -> list[dict]:
         logger.info(f"Error reading project metadata: {e}")
 
     return projects
+
+
+def get_rollup_projects(rollup_path: str) -> list[dict]:
+    """
+    Find all projects that belong to a specific rollup path.
+    
+    Args:
+        rollup_path: The rollup directory path (e.g., "/Users/user/dev")
+        
+    Returns:
+        List of project dictionaries that are children of the rollup path
+    """
+    all_projects = get_all_projects_with_metadata()
+    rollup_projects = []
+    
+    # Normalize rollup path
+    rollup_path = os.path.abspath(rollup_path)
+    if rollup_path.endswith("/"):
+        rollup_path = rollup_path[:-1]
+    
+    for project in all_projects:
+        # Convert log directory name back to project path
+        dir_name = project["dir_name"]
+        
+        # Handle leading dash
+        if dir_name.startswith("-"):
+            project_path = "/" + dir_name[1:].replace("-", "/")
+        else:
+            project_path = dir_name.replace("-", "/")
+        
+        # Check if this project is the rollup path itself or under the rollup path
+        if project_path == rollup_path or project_path.startswith(rollup_path + "/"):
+            # Add the original project path for reference
+            project["original_path"] = project_path
+            rollup_projects.append(project)
+    
+    return rollup_projects
+
+
+def get_rollups_with_metadata(rollup_configs: dict[str, str]) -> list[dict]:
+    """
+    Get rollup metadata including aggregated stats from child projects.
+    
+    Args:
+        rollup_configs: Dictionary mapping rollup names to paths
+        
+    Returns:
+        List of rollup dictionaries with metadata
+    """
+    rollups = []
+    
+    for rollup_name, rollup_path in rollup_configs.items():
+        child_projects = get_rollup_projects(rollup_path)
+        
+        if child_projects:
+            # Aggregate metadata
+            total_files = sum(p["file_count"] for p in child_projects)
+            total_size_mb = sum(p["total_size_mb"] for p in child_projects)
+            last_modified = max(p["last_modified"] for p in child_projects)
+            first_seen = min(p["first_seen"] for p in child_projects)
+            
+            rollup_data = {
+                "rollup_name": rollup_name,
+                "rollup_path": rollup_path,
+                "display_name": rollup_name,
+                "is_rollup": True,
+                "child_count": len(child_projects),
+                "child_projects": child_projects,
+                "file_count": total_files,
+                "total_size_mb": total_size_mb,
+                "last_modified": last_modified,
+                "first_seen": first_seen,
+                # Use rollup name as "dir_name" for consistency with regular projects
+                "dir_name": f"rollup:{rollup_name}",
+                "log_path": None,  # Rollups don't have a single log path
+            }
+            
+            rollups.append(rollup_data)
+    
+    return rollups

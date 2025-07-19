@@ -74,3 +74,19 @@
     color: rgba(255, 255, 255, 0.7);
     font-size: 0.8rem;
 }
+
+/* Optgroup styling for rollups vs projects */
+.project-selector-dropdown optgroup {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.25rem 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.project-selector-dropdown option {
+    padding: 0.5rem 0.75rem;
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}

@@ -527,6 +527,12 @@
         // Tab switching functionality
         // Load messages when Messages tab is activated
         async function loadMessagesForTab() {
+            // Skip loading messages for rollups
+            if (window.isRollup) {
+                console.log('📁 Skipping message loading for rollup view');
+                return;
+            }
+            
             // Check if we already have enough messages loaded
             if (window.allMessages && window.allMessages.length >= Math.min(1000, window.totalMessageCount)) {
                 // Don't load more if we already have the initial batch
@@ -656,66 +662,92 @@
             // Memory monitoring will be enabled/disabled based on server config
             
             try {
-                // First check if project is in URL
+                // First check if project/rollup is in URL
                 const projectFromURL = detectProjectFromURL();
+                let isRollup = false;
+                let rollupName = null;
+                
                 if (projectFromURL) {
-                    console.log('🔍 Setting project from URL...');
+                    console.log('🔍 Setting project/rollup from URL...');
                     const projectSet = await setProjectFromURL();
                     if (!projectSet) {
                         showEmptyState();
                         return;
                     }
+                    
+                    // Check if this is a rollup
+                    isRollup = projectFromURL.type === 'rollup';
+                    if (isRollup) {
+                        rollupName = projectFromURL.name;
+                        console.log(`📁 Loading rollup: ${rollupName}`);
+                    }
                 }
                 
-                // Then check if a project is selected
-                const projectCheckStart = performance.now();
-                const projectResponse = await fetch('/api/project');
-                const projectData = await projectResponse.json();
-                timings.projectCheck = performance.now() - projectCheckStart;
-                console.log(`✓ Project check: ${timings.projectCheck.toFixed(2)}ms`);
-                
-                if (projectData.status === 'no_project') {
-                    // Show empty state with project selector
-                    showEmptyState();
-                    return;
-                }
-                
-                // Project selector will be populated by loadRecentProjects() later
-                
-                // Use optimized dashboard data endpoint with timezone offset
+                let dashboardData;
                 const timezoneOffset = new Date().getTimezoneOffset(); // Returns offset in minutes
-                const dashboardDataUrl = `${apiBase}/dashboard-data?timezone_offset=${-timezoneOffset}`;
+                const dataStart = performance.now(); // Move this outside the branches
                 
-                // Load all dashboard data in one optimized call
-                const dataStart = performance.now();
-                const dataResponse = await fetch(dashboardDataUrl);
-                if (!dataResponse.ok) {
-                    throw new Error('Failed to load dashboard data');
+                if (isRollup && rollupName) {
+                    // Load rollup data using normalized API
+                    console.log('📁 Loading rollup dashboard data...');
+                    const rollupResponse = await fetch(`/api/rollups/${rollupName}/stats?timezone_offset=${-timezoneOffset}`);
+                    if (!rollupResponse.ok) {
+                        throw new Error('Failed to load rollup data');
+                    }
+                    dashboardData = await rollupResponse.json();
+                    
+                    console.log(`✓ Rollup data loaded: ${(performance.now() - dataStart).toFixed(2)}ms`);
+                    
+                } else {
+                    // Regular project logic
+                    const projectCheckStart = performance.now();
+                    const projectResponse = await fetch('/api/project');
+                    const projectData = await projectResponse.json();
+                    timings.projectCheck = performance.now() - projectCheckStart;
+                    console.log(`✓ Project check: ${timings.projectCheck.toFixed(2)}ms`);
+                    
+                    if (projectData.status === 'no_project') {
+                        // Show empty state with project selector
+                        showEmptyState();
+                        return;
+                    }
+                    
+                    // Use optimized dashboard data endpoint with timezone offset
+                    const dashboardDataUrl = `${apiBase}/dashboard-data?timezone_offset=${-timezoneOffset}`;
+                    
+                    // Load all dashboard data in one optimized call
+                    const dataResponse = await fetch(dashboardDataUrl);
+                    if (!dataResponse.ok) {
+                        throw new Error('Failed to load dashboard data');
+                    }
+                    dashboardData = await dataResponse.json();
+                    
+                    console.log(`✓ Dashboard data loaded: ${(performance.now() - dataStart).toFixed(2)}ms`);
                 }
-                const dashboardData = await dataResponse.json();
                 
                 // Extract data from response
                 statistics = dashboardData.statistics;
                 window.statistics = statistics;  // Make available globally for sharing
                 
-                // Use chart messages for charts (smaller payload)
-                // Chart messages no longer needed - all charts use backend statistics
+                // Store rollup flag globally
+                window.isRollup = isRollup;
+                window.rollupName = rollupName;
                 
-                // Store first page of full messages
+                // Handle messages data (same for both projects and rollups now)
                 const messagesPage = dashboardData.messages_page;
-                allMessages = messagesPage.messages;  // Start with first page only
+                allMessages = messagesPage.messages;  // Will be empty array for rollups
                 window.allMessages = allMessages;  // Make available globally
                 
                 // Store total message count for UI
                 window.totalMessageCount = dashboardData.message_count;
                 
+                // Flag to indicate partial data (false for rollups since they have no messages)
+                window.isLoadingFullMessages = !isRollup && allMessages.length < window.totalMessageCount;
+                
                 // Store configuration
                 window.messagesInitialLoad = dashboardData.config?.messages_initial_load || 1000;
                 window.memoryMonitorEnabled = dashboardData.config?.enable_memory_monitor || false;
                 window.maxDateRangeDays = dashboardData.config?.max_date_range_days || 30;
-                
-                // Flag to indicate partial data
-                window.isLoadingFullMessages = true;
                 
                 const dataLoadTime = performance.now() - dataStart;
                 timings.dashboardDataLoad = dataLoadTime;
@@ -766,8 +798,35 @@
                 timings.uiInit = performance.now() - uiStart;
                 console.log(`✓ UI initialized: ${timings.uiInit.toFixed(2)}ms`);
                 
-                // Clear loading flag since we're not doing background load anymore
-                window.isLoadingFullMessages = false;
+                // Handle rollup-specific UI changes
+                if (isRollup) {
+                    console.log('📁 Configuring UI for rollup view...');
+                    
+                    // Hide Messages and JSONL tabs since rollups don't have individual messages
+                    const messagesTabButton = document.querySelector('.tab-button[onclick="switchTab(\'messages\')"]');
+                    const jsonlTabButton = document.querySelector('.tab-button[onclick="switchTab(\'jsonl\')"]');
+                    
+                    if (messagesTabButton) {
+                        messagesTabButton.style.display = 'none';
+                    }
+                    if (jsonlTabButton) {
+                        jsonlTabButton.style.display = 'none';
+                    }
+                    
+                    // Make sure Commands tab is active and visible
+                    switchTab('commands');
+                    
+                    // Update any UI text to indicate this is a rollup
+                    const commandsSummary = document.getElementById('commands-summary');
+                    if (commandsSummary) {
+                        const childCount = statistics.child_project_count || 0;
+                        const commandCount = (statistics.user_interactions && statistics.user_interactions.user_commands_analyzed) || 0;
+                        commandsSummary.innerHTML = `Rollup "${rollupName}" • ${childCount} projects • ${commandCount} commands`;
+                    }
+                }
+                
+                // Set loading flag appropriately
+                window.isLoadingFullMessages = !isRollup && allMessages.length < window.totalMessageCount;
                 
                 // Show refresh, export, and share buttons
                 const refreshButton = document.getElementById('refresh-button');
@@ -984,7 +1043,9 @@
         // Project selector functions (local mode only)
         async function loadRecentProjects() {
             try {
-                const response = await fetch('/api/recent-projects');
+                // Always use the comprehensive projects API to show both rollups and projects
+                // This provides a consistent experience across project and rollup pages
+                const response = await fetch('/api/projects?include_stats=false&limit=30');
                 const data = await response.json();
                 
                 if (data.projects && data.projects.length > 0) {
@@ -993,26 +1054,97 @@
                     // Clear ALL existing options
                     selector.innerHTML = '';
                     
-                    // Get current project
-                    const currentResponse = await fetch('/api/project');
-                    const currentData = await currentResponse.json();
-                    const currentDirName = currentData.log_dir_name;
+                    let currentDirName = null;
                     
-                    // Add recent projects to selector
-                    data.projects.forEach(project => {
-                        const option = document.createElement('option');
-                        option.value = project.dir_name;
-                        
-                        // Show just the directory name
-                        option.textContent = project.dir_name;
-                        
-                        // Mark current project as selected
-                        if (project.dir_name === currentDirName) {
-                            option.selected = true;
+                    // For rollups, skip the current project check
+                    if (!window.isRollup) {
+                        // Get current project
+                        const currentResponse = await fetch('/api/project');
+                        const currentData = await currentResponse.json();
+                        currentDirName = currentData.log_dir_name;
+                    } else {
+                        // For rollups, use the rollup name as identifier
+                        currentDirName = `rollup:${window.rollupName}`;
+                    }
+                    
+                    // Separate rollups from regular projects for better organization
+                    const rollups = data.projects.filter(p => p.is_rollup);
+                    const projects = data.projects.filter(p => !p.is_rollup);
+                    
+                    // Add rollups first (if any)
+                    if (rollups.length > 0) {
+                        // Add rollups section header
+                        if (projects.length > 0) {
+                            const rollupHeader = document.createElement('optgroup');
+                            rollupHeader.label = '📁 Rollups';
+                            selector.appendChild(rollupHeader);
+                            
+                            rollups.forEach(rollup => {
+                                const option = document.createElement('option');
+                                option.value = rollup.dir_name;
+                                
+                                // Show rollup name with child count
+                                const rollupName = rollup.rollup_name || rollup.dir_name.replace('rollup:', '');
+                                const childCount = rollup.child_count || 0;
+                                option.textContent = `${rollupName} (${childCount} projects)`;
+                                
+                                // Mark current rollup as selected
+                                if (rollup.dir_name === currentDirName) {
+                                    option.selected = true;
+                                }
+                                
+                                rollupHeader.appendChild(option);
+                            });
+                            
+                            // Add projects section header
+                            const projectHeader = document.createElement('optgroup');
+                            projectHeader.label = '📄 Projects';
+                            selector.appendChild(projectHeader);
+                            
+                            projects.forEach(project => {
+                                const option = document.createElement('option');
+                                option.value = project.dir_name;
+                                option.textContent = project.dir_name;
+                                
+                                // Mark current project as selected
+                                if (project.dir_name === currentDirName) {
+                                    option.selected = true;
+                                }
+                                
+                                projectHeader.appendChild(option);
+                            });
+                        } else {
+                            // Only rollups, no need for optgroup
+                            rollups.forEach(rollup => {
+                                const option = document.createElement('option');
+                                option.value = rollup.dir_name;
+                                
+                                const rollupName = rollup.rollup_name || rollup.dir_name.replace('rollup:', '');
+                                const childCount = rollup.child_count || 0;
+                                option.textContent = `📁 ${rollupName} (${childCount} projects)`;
+                                
+                                if (rollup.dir_name === currentDirName) {
+                                    option.selected = true;
+                                }
+                                
+                                selector.appendChild(option);
+                            });
                         }
-                        
-                        selector.appendChild(option);
-                    });
+                    } else {
+                        // No rollups, just add projects
+                        projects.forEach(project => {
+                            const option = document.createElement('option');
+                            option.value = project.dir_name;
+                            option.textContent = project.dir_name;
+                            
+                            // Mark current project as selected
+                            if (project.dir_name === currentDirName) {
+                                option.selected = true;
+                            }
+                            
+                            selector.appendChild(option);
+                        });
+                    }
                 }
             } catch (error) {
                 console.error('Error loading recent projects:', error);
@@ -1029,8 +1161,15 @@
                 return;
             }
             
-            // Navigate to project-specific URL
-            window.location.href = `/project/${dirName}`;
+            // Check if this is a rollup or regular project
+            if (dirName.startsWith('rollup:')) {
+                // Navigate to rollup URL
+                const rollupName = dirName.replace('rollup:', '');
+                window.location.href = `/rollup/${encodeURIComponent(rollupName)}`;
+            } else {
+                // Navigate to project-specific URL
+                window.location.href = `/project/${dirName}`;
+            }
         }
         
         // Show empty state for local mode when no project is selected
@@ -1087,27 +1226,76 @@
                 section.style.display = 'none';
             });
             
-            // Load and display recent projects
+            // Load and display recent projects and rollups
             try {
-                const response = await fetch('/api/recent-projects');
+                const response = await fetch('/api/projects?include_stats=false&limit=30');
                 const data = await response.json();
                 
                 if (data.projects && data.projects.length > 0) {
                     const selector = document.getElementById('project-selector');
                     
-                    // Add recent projects to selector
-                    data.projects.forEach(project => {
-                        const option = document.createElement('option');
-                        option.value = project.dir_name;
-                        option.textContent = project.dir_name;
-                        selector.appendChild(option);
-                    });
+                    // Separate rollups from regular projects
+                    const rollups = data.projects.filter(p => p.is_rollup);
+                    const projects = data.projects.filter(p => !p.is_rollup);
                     
-                    // Update header message if projects are available
+                    // Add rollups first (if any)
+                    if (rollups.length > 0) {
+                        if (projects.length > 0) {
+                            const rollupHeader = document.createElement('optgroup');
+                            rollupHeader.label = '📁 Rollups';
+                            selector.appendChild(rollupHeader);
+                            
+                            rollups.forEach(rollup => {
+                                const option = document.createElement('option');
+                                option.value = rollup.dir_name;
+                                const rollupName = rollup.rollup_name || rollup.dir_name.replace('rollup:', '');
+                                const childCount = rollup.child_count || 0;
+                                option.textContent = `${rollupName} (${childCount} projects)`;
+                                rollupHeader.appendChild(option);
+                            });
+                            
+                            const projectHeader = document.createElement('optgroup');
+                            projectHeader.label = '📄 Projects';
+                            selector.appendChild(projectHeader);
+                            
+                            projects.forEach(project => {
+                                const option = document.createElement('option');
+                                option.value = project.dir_name;
+                                option.textContent = project.dir_name;
+                                projectHeader.appendChild(option);
+                            });
+                        } else {
+                            rollups.forEach(rollup => {
+                                const option = document.createElement('option');
+                                option.value = rollup.dir_name;
+                                const rollupName = rollup.rollup_name || rollup.dir_name.replace('rollup:', '');
+                                const childCount = rollup.child_count || 0;
+                                option.textContent = `📁 ${rollupName} (${childCount} projects)`;
+                                selector.appendChild(option);
+                            });
+                        }
+                    } else {
+                        // No rollups, just add projects
+                        projects.forEach(project => {
+                            const option = document.createElement('option');
+                            option.value = project.dir_name;
+                            option.textContent = project.dir_name;
+                            selector.appendChild(option);
+                        });
+                    }
+                    
+                    // Update header message if projects/rollups are available
                     if (data.projects.length > 0) {
                         const headerStatus = document.getElementById('header-project-status');
                         if (headerStatus) {
-                            headerStatus.innerHTML = `Found <strong>${data.projects.length}</strong> projects in your Claude logs`;
+                            const rollupCount = rollups.length;
+                            const projectCount = projects.length;
+                            let message = `Found <strong>${projectCount}</strong> projects`;
+                            if (rollupCount > 0) {
+                                message += ` and <strong>${rollupCount}</strong> rollups`;
+                            }
+                            message += ' in your Claude logs';
+                            headerStatus.innerHTML = message;
                         }
                     }
                 }

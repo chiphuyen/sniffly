@@ -338,8 +338,9 @@ async function loadProjects(retryCount = 0) {
       }
     });
         
-    // Update header with project count
-    document.getElementById('project-count').textContent = allProjects.length;
+    // Update header with project count (keep simple for header)
+    const regularProjectsCount = allProjects.filter(p => p.is_rollup !== true).length;
+    document.getElementById('project-count').textContent = regularProjectsCount;
         
     // Initialize filtered projects and render table
     filteredProjects = [...allProjects];
@@ -546,10 +547,38 @@ function renderProjectsTable() {
     
   // Update project count info
   const countInfo = document.getElementById('project-count-info');
+  
+  // Count rollups vs regular projects
+  const rollups = allProjects.filter(p => p.is_rollup === true);
+  const regularProjects = allProjects.filter(p => p.is_rollup !== true);
+  const filteredRollups = filteredProjects.filter(p => p.is_rollup === true);
+  const filteredRegularProjects = filteredProjects.filter(p => p.is_rollup !== true);
+  
+  console.log('[Overview] Rollup count debug:', {
+    totalProjects: allProjects.length,
+    rollups: rollups.length,
+    regularProjects: regularProjects.length,
+    rollupsFound: rollups.map(r => r.display_name)
+  });
+  
   if (filteredProjects.length !== allProjects.length) {
-    countInfo.textContent = `Showing ${filteredProjects.length} of ${allProjects.length} projects`;
+    // When filtering is active
+    let countText = `Showing ${filteredRegularProjects.length} of ${regularProjects.length} projects`;
+    if (rollups.length > 0) {
+      countText += `, <a href="#" onclick="showCreateRollupModal(); return false;" class="rollup-count-link">${filteredRollups.length} of ${rollups.length} rollups</a>`;
+    } else {
+      countText += `, <a href="#" onclick="showCreateRollupModal(); return false;" class="rollup-count-link">0 rollups</a>`;
+    }
+    countInfo.innerHTML = countText;
   } else {
-    countInfo.textContent = `${allProjects.length} projects`;
+    // When showing all
+    let countText = `${regularProjects.length} projects`;
+    if (rollups.length > 0) {
+      countText += `, <a href="#" onclick="showCreateRollupModal(); return false;" class="rollup-count-link">${rollups.length} rollups</a>`;
+    } else {
+      countText += `, <a href="#" onclick="showCreateRollupModal(); return false;" class="rollup-count-link">0 rollups</a>`;
+    }
+    countInfo.innerHTML = countText;
   }
     
   // Render rows
@@ -612,12 +641,20 @@ function renderProjectsTable() {
     }
         
     // Check if this row was recently updated
-    const wasUpdated = projectUpdateMap.has(project.log_path);
-    const rowClass = wasUpdated ? 'recently-updated' : '';
+    const wasUpdated = projectUpdateMap.has(project.log_path || project.dir_name);
+    const isRollup = project.is_rollup === true;
+    let rowClass = wasUpdated ? 'recently-updated' : '';
+    if (isRollup) rowClass += ' rollup-row';
+    
+    // For rollups, use a different data attribute
+    const dataAttr = isRollup ? `data-rollup-name="${project.rollup_name}"` : `data-project-path="${project.log_path}"`;
         
     return `
-            <tr onclick="navigateToProject('${project.url_slug}')" style="cursor: pointer;" class="${rowClass}" data-project-path="${project.log_path}">
-                <td class="project-name" title="${escapeHtml(project.display_name)}">${escapeHtml(project.display_name)}</td>
+            <tr onclick="navigateToProject('${project.url_slug}')" style="cursor: pointer;" class="${rowClass}" ${dataAttr}>
+                <td class="project-name" title="${escapeHtml(project.display_name)}">
+                    ${isRollup ? '<span class="rollup-icon">📁</span> ' : ''}${escapeHtml(project.display_name)}
+                    ${isRollup ? ` <span class="rollup-badge">(${project.child_count} projects)</span>` : ''}
+                </td>
                 <td>${formatDate(lastModified.toISOString())}</td>
                 <td>${duration}</td>
                 <td>${cost}</td>
@@ -649,7 +686,68 @@ function renderProjectsTable() {
 
 // Navigate to project dashboard
 function navigateToProject(urlSlug) {
-  window.location.href = `/project/${urlSlug}`;
+  if (urlSlug.startsWith('rollup:')) {
+    // For rollups, use the rollup endpoint
+    const rollupName = urlSlug.substring(7); // Remove 'rollup:' prefix
+    window.location.href = `/rollup/${rollupName}`;
+  } else {
+    window.location.href = `/project/${urlSlug}`;
+  }
+}
+
+// Rollup management functions
+function showCreateRollupModal() {
+  document.getElementById('create-rollup-modal').style.display = 'block';
+  // Focus the name input
+  document.getElementById('rollup-name').focus();
+}
+
+function hideCreateRollupModal() {
+  document.getElementById('create-rollup-modal').style.display = 'none';
+  // Clear form
+  document.getElementById('create-rollup-form').reset();
+}
+
+async function createRollup() {
+  const name = document.getElementById('rollup-name').value.trim();
+  const path = document.getElementById('rollup-path').value.trim();
+  
+  if (!name || !path) {
+    alert('Please fill in both rollup name and directory path.');
+    return;
+  }
+  
+  try {
+    const response = await fetch('/api/rollups', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name, path })
+    });
+    
+    const result = await response.json();
+    
+    if (response.ok) {
+      console.log('[Overview] Rollup created successfully:', result);
+      hideCreateRollupModal();
+      // Reload projects to show the new rollup
+      await loadProjects();
+    } else {
+      alert(`Failed to create rollup: ${result.detail || result.error || 'Unknown error'}`);
+    }
+  } catch (error) {
+    console.error('[Overview] Error creating rollup:', error);
+    alert('Failed to create rollup. Please try again.');
+  }
+}
+
+// Close modal when clicking outside of it
+window.onclick = function(event) {
+  const modal = document.getElementById('create-rollup-modal');
+  if (event.target === modal) {
+    hideCreateRollupModal();
+  }
 }
 
 // Phase 2: Load and aggregate global statistics

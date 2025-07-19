@@ -194,6 +194,14 @@ async def project_dashboard(project_name: str):
     return FileResponse(os.path.join(BASE_DIR, "templates", "dashboard.html"))
 
 
+# Rollup dashboard URLs
+@app.get("/rollup/{rollup_name:path}")
+async def rollup_dashboard(rollup_name: str):
+    """Serve the dashboard for a specific rollup"""
+    # The dashboard.html will use JavaScript to extract the rollup name from the URL
+    return FileResponse(os.path.join(BASE_DIR, "templates", "dashboard.html"))
+
+
 # Set project endpoint
 @app.post("/api/project")
 async def set_project(data: dict[str, str]):
@@ -961,21 +969,69 @@ async def get_projects(
     Returns:
         JSON with projects list and metadata
     """
-    from sniffly.utils.log_finder import get_all_projects_with_metadata
+    from sniffly.utils.log_finder import get_all_projects_with_metadata, get_rollups_with_metadata
 
     try:
         # Get all projects with metadata
         projects = get_all_projects_with_metadata()
+        
+        # Get rollups and add them to the projects list
+        rollup_configs = config.get_rollups()
+        rollups = get_rollups_with_metadata(rollup_configs)
+        
+        # Add rollups to the projects list
+        projects.extend(rollups)
 
         # Add cache status and URL slug for each project
         for project in projects:
-            project["in_cache"] = memory_cache.get(project["log_path"]) is not None
-            project["url_slug"] = project["dir_name"]  # Use dir name for URLs
+            if project.get("is_rollup"):
+                # For rollups, mark as cached if any child projects are cached
+                project["in_cache"] = any(
+                    memory_cache.get(child["log_path"]) is not None 
+                    for child in project.get("child_projects", [])
+                )
+                project["url_slug"] = f"rollup:{project['rollup_name']}"
+            else:
+                project["in_cache"] = memory_cache.get(project["log_path"]) is not None
+                project["url_slug"] = project["dir_name"]  # Use dir name for URLs
 
         if include_stats:
             # Add statistics from cache for cached projects
             for project in projects:
-                if project["in_cache"]:
+                if project.get("is_rollup"):
+                    # For rollups, generate aggregated stats
+                    from sniffly.core.global_aggregator import GlobalStatsAggregator
+                    aggregator = GlobalStatsAggregator(memory_cache, cache_service)
+                    try:
+                        rollup_stats = await aggregator.get_rollup_stats(
+                            project["rollup_name"], 
+                            project.get("child_projects", [])
+                        )
+                        
+                        # Extract simplified stats for the overview
+                        overview = rollup_stats.get("overview", {})
+                        total_tokens = overview.get("total_tokens", {})
+                        user_interactions = rollup_stats.get("user_interactions", {})
+                        
+                        project["stats"] = {
+                            "total_input_tokens": total_tokens.get("input", 0),
+                            "total_output_tokens": total_tokens.get("output", 0),
+                            "total_cache_read": total_tokens.get("cache_read", 0),
+                            "total_cache_write": total_tokens.get("cache_creation", 0),
+                            "total_commands": user_interactions.get("user_commands_analyzed", 0),
+                            "avg_tokens_per_command": user_interactions.get("avg_tokens_per_command", 0),
+                            "avg_steps_per_command": user_interactions.get("avg_steps_per_command", 0),
+                            "compact_summary_count": 0,  # Not meaningful for rollups
+                            "first_message_date": overview.get("date_range", {}).get("start"),
+                            "last_message_date": overview.get("date_range", {}).get("end"),
+                            "total_cost": overview.get("total_cost", 0),
+                        }
+                        logger.debug(f"Added rollup stats for {project['rollup_name']}: {project['stats']}")
+                    except Exception as e:
+                        logger.error(f"Failed to get rollup stats for {project['rollup_name']}: {e}")
+                        project["stats"] = None
+                        
+                elif project["in_cache"]:
                     cache_result = memory_cache.get(project["log_path"])
                     if cache_result:
                         _, stats = cache_result
@@ -1133,6 +1189,196 @@ async def refresh_pricing():
             return JSONResponse({"status": "error", "message": "Failed to fetch pricing from LiteLLM"}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": f"Failed to refresh pricing: {str(e)}"}, status_code=500)
+
+
+# Rollup endpoints
+@app.get("/api/rollups")
+async def get_rollups():
+    """Get all configured rollups with metadata"""
+    try:
+        from sniffly.utils.log_finder import get_rollups_with_metadata
+        
+        rollup_configs = config.get_rollups()
+        rollups = get_rollups_with_metadata(rollup_configs)
+        
+        # Add cache status for rollup child projects
+        for rollup in rollups:
+            for child in rollup.get("child_projects", []):
+                child["in_cache"] = memory_cache.get(child["log_path"]) is not None
+        
+        return JSONResponse({"rollups": rollups})
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Failed to get rollups: {str(e)}"}, status_code=500)
+
+
+@app.post("/api/rollups")
+async def create_rollup(data: dict[str, str]):
+    """Create or update a rollup configuration"""
+    try:
+        name = data.get("name")
+        path = data.get("path")
+        
+        if not name or not path:
+            raise HTTPException(status_code=400, detail="Both name and path are required")
+        
+        # Validate the path exists
+        import os
+        if not os.path.exists(path) or not os.path.isdir(path):
+            raise HTTPException(status_code=400, detail="Path does not exist or is not a directory")
+        
+        # Add rollup to config
+        config.add_rollup(name, path)
+        
+        return JSONResponse({
+            "status": "success",
+            "message": f"Rollup '{name}' created successfully",
+            "rollup": {"name": name, "path": path}
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Failed to create rollup: {str(e)}"}, status_code=500)
+
+
+@app.delete("/api/rollups/{rollup_name}")
+async def delete_rollup(rollup_name: str):
+    """Delete a rollup configuration"""
+    try:
+        rollups = config.get_rollups()
+        if rollup_name not in rollups:
+            raise HTTPException(status_code=404, detail="Rollup not found")
+        
+        config.remove_rollup(rollup_name)
+        
+        return JSONResponse({
+            "status": "success",
+            "message": f"Rollup '{rollup_name}' deleted successfully"
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Failed to delete rollup: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/rollups/{rollup_name}/stats")
+async def get_rollup_stats_endpoint(rollup_name: str, timezone_offset: int = 0):
+    """Get aggregated statistics for a specific rollup in dashboard-data format"""
+    try:
+        from sniffly.core.global_aggregator import GlobalStatsAggregator
+        from sniffly.utils.log_finder import get_rollup_projects
+        
+        # Get rollup path from config
+        rollup_path = config.get_rollup_path(rollup_name)
+        if not rollup_path:
+            raise HTTPException(status_code=404, detail="Rollup not found")
+        
+        # Get child projects
+        child_projects = get_rollup_projects(rollup_path)
+        if not child_projects:
+            # Return empty dashboard-data format for rollups with no projects
+            return JSONResponse({
+                "statistics": {
+                    "overview": {
+                        "project_name": rollup_name,
+                        "project_path": rollup_path,
+                        "total_tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+                        "total_cost": 0.0,
+                        "date_range": {"start": None, "end": None},
+                        "total_messages": 0,
+                        "message_types": {}
+                    },
+                    "user_interactions": {
+                        "user_commands_analyzed": 0,
+                        "avg_tokens_per_command": 0,
+                        "avg_steps_per_command": 0
+                    },
+                    "daily_stats": {},
+                    "is_rollup": True,
+                    "rollup_name": rollup_name,
+                    "child_project_count": 0
+                },
+                "messages_page": {"messages": []},
+                "message_count": 0,
+                "config": {
+                    "messages_initial_load": config.get("messages_initial_load"),
+                    "enable_memory_monitor": config.get("enable_memory_monitor"),
+                    "max_date_range_days": config.get("max_date_range_days"),
+                }
+            })
+        
+        # Add cache status
+        for project in child_projects:
+            project["in_cache"] = memory_cache.get(project["log_path"]) is not None
+        
+        # Get aggregated stats
+        aggregator = GlobalStatsAggregator(memory_cache, cache_service)
+        rollup_stats = await aggregator.get_rollup_stats(rollup_name, child_projects)
+        
+        # Transform to dashboard-data format (same as /api/dashboard-data)
+        # Add project metadata to stats
+        rollup_stats["overview"]["project_name"] = rollup_name
+        rollup_stats["overview"]["project_path"] = rollup_path
+        
+        # Return in same format as dashboard-data endpoint
+        return JSONResponse({
+            "statistics": rollup_stats,
+            "messages_page": {"messages": []},  # Rollups don't have individual messages
+            "message_count": 0,  # Rollups don't have individual messages
+            "config": {
+                "messages_initial_load": config.get("messages_initial_load"),
+                "enable_memory_monitor": config.get("enable_memory_monitor"),
+                "max_date_range_days": config.get("max_date_range_days"),
+            }
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Failed to get rollup stats: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/rollups/{rollup_name}/projects")
+async def get_rollup_projects_endpoint(rollup_name: str):
+    """Get list of projects in a specific rollup"""
+    try:
+        from sniffly.utils.log_finder import get_rollup_projects
+        
+        # Get rollup path from config
+        rollup_path = config.get_rollup_path(rollup_name)
+        if not rollup_path:
+            raise HTTPException(status_code=404, detail="Rollup not found")
+        
+        # Get child projects
+        child_projects = get_rollup_projects(rollup_path)
+        
+        # Add cache status
+        for project in child_projects:
+            project["in_cache"] = memory_cache.get(project["log_path"]) is not None
+        
+        return JSONResponse({
+            "rollup_name": rollup_name,
+            "rollup_path": rollup_path,
+            "projects": child_projects,
+            "project_count": len(child_projects)
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Failed to get rollup projects: {str(e)}"}, status_code=500)
 
 
 # Share endpoints

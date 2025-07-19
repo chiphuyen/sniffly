@@ -25,6 +25,7 @@ DEFAULTS = {
     "share_base_url": "https://sniffly.dev",
     "share_api_url": "https://sniffly.dev",
     "share_enabled": True,
+    "rollups": {},
 }
 
 # Map config keys to environment variable names
@@ -188,3 +189,45 @@ class Config:
                 return default
         else:
             return value
+
+    # Rollup management methods
+    def get_rollups(self) -> dict[str, str]:
+        """Get all configured rollups.
+        
+        Returns:
+            Dictionary mapping rollup names to directory paths
+        """
+        return self.get("rollups", {})
+
+    def add_rollup(self, name: str, path: str):
+        """Add a new rollup configuration.
+        
+        Args:
+            name: Display name for the rollup
+            path: Directory path for the rollup
+        """
+        rollups = self.get_rollups()
+        rollups[name] = path
+        self.set("rollups", rollups)
+
+    def remove_rollup(self, name: str):
+        """Remove a rollup configuration.
+        
+        Args:
+            name: Name of the rollup to remove
+        """
+        rollups = self.get_rollups()
+        rollups.pop(name, None)
+        self.set("rollups", rollups)
+
+    def get_rollup_path(self, name: str) -> str | None:
+        """Get the path for a specific rollup.
+        
+        Args:
+            name: Name of the rollup
+            
+        Returns:
+            Directory path or None if rollup doesn't exist
+        """
+        rollups = self.get_rollups()
+        return rollups.get(name)

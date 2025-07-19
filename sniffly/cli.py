@@ -193,6 +193,94 @@ def clear_cache(project):
     click.echo("For now, restart the server to clear the cache.")
 
 
+@cli.group()
+def rollup():
+    """Manage project rollups"""
+    pass
+
+
+@rollup.command("add")
+@click.argument("name")
+@click.argument("path")
+def add_rollup(name, path):
+    """Add a new rollup configuration"""
+    cfg = Config()
+    
+    # Validate the path exists
+    if not os.path.exists(path) or not os.path.isdir(path):
+        click.echo(f"Error: Path does not exist or is not a directory: {path}")
+        return
+    
+    # Check if rollup already exists
+    rollups = cfg.get_rollups()
+    if name in rollups:
+        click.echo(f"Error: Rollup '{name}' already exists with path: {rollups[name]}")
+        return
+    
+    # Add the rollup
+    cfg.add_rollup(name, path)
+    click.echo(f"✅ Added rollup '{name}' for path: {path}")
+
+
+@rollup.command("list")
+def list_rollups():
+    """List all configured rollups"""
+    cfg = Config()
+    rollups = cfg.get_rollups()
+    
+    if not rollups:
+        click.echo("No rollups configured.")
+        return
+    
+    click.echo("Configured rollups:")
+    for name, path in rollups.items():
+        click.echo(f"  {name}: {path}")
+
+
+@rollup.command("remove")
+@click.argument("name")
+def remove_rollup(name):
+    """Remove a rollup configuration"""
+    cfg = Config()
+    rollups = cfg.get_rollups()
+    
+    if name not in rollups:
+        click.echo(f"Error: Rollup '{name}' not found.")
+        return
+    
+    cfg.remove_rollup(name)
+    click.echo(f"✅ Removed rollup '{name}'")
+
+
+@rollup.command("show")
+@click.argument("name")
+def show_rollup(name):
+    """Show details about a specific rollup"""
+    cfg = Config()
+    path = cfg.get_rollup_path(name)
+    
+    if not path:
+        click.echo(f"Error: Rollup '{name}' not found.")
+        return
+    
+    click.echo(f"Rollup: {name}")
+    click.echo(f"Path: {path}")
+    
+    # Try to find child projects
+    try:
+        from .utils.log_finder import get_rollup_projects
+        child_projects = get_rollup_projects(path)
+        
+        if child_projects:
+            click.echo(f"Child projects ({len(child_projects)}):")
+            for project in child_projects:
+                click.echo(f"  - {project['display_name']} ({project['total_size_mb']:.1f}MB)")
+        else:
+            click.echo("No child projects found.")
+    except Exception as e:
+        click.echo(f"Warning: Could not load child projects: {e}")
+
+
 @cli.command(name="help")
 def show_help():
     """Show detailed help and usage examples"""
@@ -237,6 +325,12 @@ Configuration Keys:
   enable_memory_monitor     - Enable memory monitoring (default: false)
   enable_background_processing - Enable background stats (default: true)
   cache_warm_on_startup     - Projects to warm on startup (default: 3)
+
+Rollup Commands:
+  sniffly rollup add "My Projects" /path/to/projects
+  sniffly rollup list
+  sniffly rollup show "My Projects"
+  sniffly rollup remove "My Projects"
 
 For more information, visit: https://sniffly.dev
 """
