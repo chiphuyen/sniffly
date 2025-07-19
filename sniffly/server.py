@@ -377,7 +377,9 @@ async def get_stats(timezone_offset: int = 0):
         return statistics
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing logs: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Error processing logs: {str(e)}"}, status_code=500)
 
 
 # Optimized dashboard data endpoint
@@ -529,7 +531,9 @@ async def get_messages(limit: int | None = None, timezone_offset: int = 0):
         return messages
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing logs: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Error processing logs: {str(e)}"}, status_code=500)
 
 
 # Messages summary endpoint - lightweight stats only
@@ -635,7 +639,9 @@ async def refresh_data(request: dict):
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error refreshing data: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Error refreshing data: {str(e)}"}, status_code=500)
 
 
 async def refresh_all_projects(request: dict):
@@ -813,7 +819,9 @@ async def get_jsonl_files(project: str | None = None):
 
         return JSONResponse(files_with_metadata)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading log files: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Error reading log files: {str(e)}"}, status_code=500)
 
 
 # Get JSONL file content
@@ -912,7 +920,9 @@ async def get_jsonl_content(file: str, project: str | None = None):
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": f"Error reading file: {str(e)}"}, status_code=500)
 
 
 # Get recent projects from Claude logs directory
@@ -952,6 +962,147 @@ async def get_recent_projects():
         return JSONResponse({"projects": [], "error": str(e)})
 
 
+# Helper functions for get_projects endpoint
+def _fetch_all_projects():
+    """Fetch and combine regular projects with rollups."""
+    from sniffly.utils.log_finder import get_all_projects_with_metadata, get_rollups_with_metadata
+    
+    # Get all projects with metadata
+    projects = get_all_projects_with_metadata()
+    
+    # Get rollups and add them to the projects list
+    rollup_configs = config.get_rollups()
+    rollups = get_rollups_with_metadata(rollup_configs)
+    
+    # Add rollups to the projects list
+    projects.extend(rollups)
+    return projects
+
+def _add_project_metadata(projects):
+    """Add cache status and URL slug metadata to projects."""
+    for project in projects:
+        if project.get("is_rollup"):
+            project["in_cache"] = False  # Rollups are never "cached" in the traditional sense
+            project["url_slug"] = f"rollup/{project['rollup_name']}"
+        else:
+            project["in_cache"] = memory_cache.get(project["log_path"]) is not None
+            project["url_slug"] = project["dir_name"]  # Use dir name for URLs
+
+async def _process_rollup_stats(projects):
+    """Process rollup statistics in batch to avoid N+1 query pattern."""
+    rollup_projects = [p for p in projects if p.get("is_rollup")]
+    if not rollup_projects:
+        return
+    
+    from sniffly.core.global_aggregator import GlobalStatsAggregator
+    aggregator = GlobalStatsAggregator(memory_cache, cache_service)
+    
+    # Create async function for processing individual rollup
+    async def process_rollup_stats(project):
+        try:
+            rollup_stats = await aggregator.get_rollup_stats(
+                project["rollup_name"], 
+                project.get("child_projects", [])
+            )
+            
+            # Extract simplified stats for the overview
+            overview = rollup_stats.get("overview", {})
+            total_tokens = overview.get("total_tokens", {})
+            user_interactions = rollup_stats.get("user_interactions", {})
+            
+            return {
+                "rollup_name": project["rollup_name"],
+                "stats": {
+                    "total_input_tokens": total_tokens.get("input", 0),
+                    "total_output_tokens": total_tokens.get("output", 0),
+                    "total_cache_read": total_tokens.get("cache_read", 0),
+                    "total_cache_write": total_tokens.get("cache_creation", 0),
+                    "total_commands": user_interactions.get("user_commands_analyzed", 0),
+                    "avg_tokens_per_command": user_interactions.get("avg_tokens_per_command", 0),
+                    "avg_steps_per_command": user_interactions.get("avg_steps_per_command", 0),
+                    "compact_summary_count": 0,  # Not meaningful for rollups
+                    "first_message_date": overview.get("date_range", {}).get("start"),
+                    "last_message_date": overview.get("date_range", {}).get("end"),
+                    "total_cost": overview.get("total_cost", 0),
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to get rollup stats for {project['rollup_name']}: {e}")
+            return {
+                "rollup_name": project["rollup_name"],
+                "stats": None
+            }
+    
+    # Process all rollups in parallel using asyncio.gather()
+    rollup_tasks = [process_rollup_stats(project) for project in rollup_projects]
+    rollup_results = await asyncio.gather(*rollup_tasks)
+    
+    # Apply results back to projects
+    rollup_stats_map = {result["rollup_name"]: result["stats"] for result in rollup_results}
+    for project in projects:
+        if project.get("is_rollup"):
+            project["stats"] = rollup_stats_map.get(project["rollup_name"])
+            if project["stats"]:
+                logger.debug(f"Added rollup stats for {project['rollup_name']}: {project['stats']}")
+
+def _process_cached_project_stats(projects):
+    """Add statistics from cache for cached projects."""
+    for project in projects:
+        if project["in_cache"] and not project.get("is_rollup"):
+            cache_result = memory_cache.get(project["log_path"])
+            if cache_result:
+                _, stats = cache_result
+                # Extract stats from nested structure
+                overview = stats.get("overview", {})
+                total_tokens = overview.get("total_tokens", {})
+                user_interactions = stats.get("user_interactions", {})
+
+                project["stats"] = {
+                    "total_input_tokens": total_tokens.get("input", 0),
+                    "total_output_tokens": total_tokens.get("output", 0),
+                    "total_cache_read": total_tokens.get("cache_read", 0),
+                    "total_cache_write": total_tokens.get("cache_creation", 0),
+                    "total_commands": user_interactions.get("user_commands_analyzed", 0),
+                    "avg_tokens_per_command": user_interactions.get("avg_tokens_per_command", 0),
+                    "avg_steps_per_command": user_interactions.get("avg_steps_per_command", 0),
+                    "compact_summary_count": overview.get("message_types", {}).get("compact_summary", 0),
+                    "first_message_date": overview.get("date_range", {}).get("start"),
+                    "last_message_date": overview.get("date_range", {}).get("end"),
+                    "total_cost": overview.get("total_cost", 0),
+                }
+            else:
+                project["stats"] = None  # Will need to load in background
+
+def _sort_projects(projects, sort_by: str):
+    """Sort projects by the specified field."""
+    if sort_by == "last_modified":
+        projects.sort(key=lambda x: x["last_modified"], reverse=True)
+    elif sort_by == "first_seen":
+        projects.sort(key=lambda x: x["first_seen"])
+    elif sort_by == "size":
+        projects.sort(key=lambda x: x["total_size_mb"], reverse=True)
+    elif sort_by == "name":
+        projects.sort(key=lambda x: x["display_name"])
+
+def _apply_pagination(projects, limit: int | None, offset: int):
+    """Apply pagination to projects list and return paginated projects with metadata."""
+    total_count = len(projects)
+    if limit:
+        paginated_projects = projects[offset : offset + limit]
+    else:
+        paginated_projects = projects
+    
+    return {
+        "projects": paginated_projects,
+        "total_count": total_count,
+        "has_more": offset + limit < total_count if limit else False,
+        "cache_status": {
+            "cached_count": sum(1 for p in paginated_projects if p["in_cache"]),
+            "total_projects": total_count,
+        },
+    }
+
+
 # Comprehensive projects endpoint for global stats
 @app.get("/api/projects")
 async def get_projects(
@@ -969,18 +1120,9 @@ async def get_projects(
     Returns:
         JSON with projects list and metadata
     """
-    from sniffly.utils.log_finder import get_all_projects_with_metadata, get_rollups_with_metadata
-
     try:
-        # Get all projects with metadata
-        projects = get_all_projects_with_metadata()
-        
-        # Get rollups and add them to the projects list
-        rollup_configs = config.get_rollups()
-        rollups = get_rollups_with_metadata(rollup_configs)
-        
-        # Add rollups to the projects list
-        projects.extend(rollups)
+        # Fetch all projects and rollups using helper
+        projects = _fetch_all_projects()
 
         # Add cache status and URL slug for each project
         for project in projects:
@@ -996,12 +1138,14 @@ async def get_projects(
                 project["url_slug"] = project["dir_name"]  # Use dir name for URLs
 
         if include_stats:
-            # Add statistics from cache for cached projects
-            for project in projects:
-                if project.get("is_rollup"):
-                    # For rollups, generate aggregated stats
-                    from sniffly.core.global_aggregator import GlobalStatsAggregator
-                    aggregator = GlobalStatsAggregator(memory_cache, cache_service)
+            # Batch process rollup stats to avoid N+1 query pattern
+            rollup_projects = [p for p in projects if p.get("is_rollup")]
+            if rollup_projects:
+                from sniffly.core.global_aggregator import GlobalStatsAggregator
+                aggregator = GlobalStatsAggregator(memory_cache, cache_service)
+                
+                # Create async function for processing individual rollup
+                async def process_rollup_stats(project):
                     try:
                         rollup_stats = await aggregator.get_rollup_stats(
                             project["rollup_name"], 
@@ -1013,25 +1157,44 @@ async def get_projects(
                         total_tokens = overview.get("total_tokens", {})
                         user_interactions = rollup_stats.get("user_interactions", {})
                         
-                        project["stats"] = {
-                            "total_input_tokens": total_tokens.get("input", 0),
-                            "total_output_tokens": total_tokens.get("output", 0),
-                            "total_cache_read": total_tokens.get("cache_read", 0),
-                            "total_cache_write": total_tokens.get("cache_creation", 0),
-                            "total_commands": user_interactions.get("user_commands_analyzed", 0),
-                            "avg_tokens_per_command": user_interactions.get("avg_tokens_per_command", 0),
-                            "avg_steps_per_command": user_interactions.get("avg_steps_per_command", 0),
-                            "compact_summary_count": 0,  # Not meaningful for rollups
-                            "first_message_date": overview.get("date_range", {}).get("start"),
-                            "last_message_date": overview.get("date_range", {}).get("end"),
-                            "total_cost": overview.get("total_cost", 0),
+                        return {
+                            "rollup_name": project["rollup_name"],
+                            "stats": {
+                                "total_input_tokens": total_tokens.get("input", 0),
+                                "total_output_tokens": total_tokens.get("output", 0),
+                                "total_cache_read": total_tokens.get("cache_read", 0),
+                                "total_cache_write": total_tokens.get("cache_creation", 0),
+                                "total_commands": user_interactions.get("user_commands_analyzed", 0),
+                                "avg_tokens_per_command": user_interactions.get("avg_tokens_per_command", 0),
+                                "avg_steps_per_command": user_interactions.get("avg_steps_per_command", 0),
+                                "compact_summary_count": 0,  # Not meaningful for rollups
+                                "first_message_date": overview.get("date_range", {}).get("start"),
+                                "last_message_date": overview.get("date_range", {}).get("end"),
+                                "total_cost": overview.get("total_cost", 0),
+                            }
                         }
-                        logger.debug(f"Added rollup stats for {project['rollup_name']}: {project['stats']}")
                     except Exception as e:
                         logger.error(f"Failed to get rollup stats for {project['rollup_name']}: {e}")
-                        project["stats"] = None
-                        
-                elif project["in_cache"]:
+                        return {
+                            "rollup_name": project["rollup_name"],
+                            "stats": None
+                        }
+                
+                # Process all rollups in parallel using asyncio.gather()
+                rollup_tasks = [process_rollup_stats(project) for project in rollup_projects]
+                rollup_results = await asyncio.gather(*rollup_tasks)
+                
+                # Apply results back to projects
+                rollup_stats_map = {result["rollup_name"]: result["stats"] for result in rollup_results}
+                for project in projects:
+                    if project.get("is_rollup"):
+                        project["stats"] = rollup_stats_map.get(project["rollup_name"])
+                        if project["stats"]:
+                            logger.debug(f"Added rollup stats for {project['rollup_name']}: {project['stats']}")
+            
+            # Add statistics from cache for cached projects
+            for project in projects:
+                if project["in_cache"] and not project.get("is_rollup"):
                     cache_result = memory_cache.get(project["log_path"])
                     if cache_result:
                         _, stats = cache_result
@@ -1416,9 +1579,8 @@ async def create_share_link(data: dict[str, Any], request: Request):
         return result
     except Exception as e:
         import traceback
-
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # Health check
