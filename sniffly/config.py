@@ -198,7 +198,9 @@ class Config:
         Returns:
             Dictionary mapping rollup names to directory paths
         """
-        return self.get("rollups", {})
+        rollups = self.get("rollups", {})
+        # Return a copy to prevent modification of shared defaults
+        return dict(rollups)
 
     def _validate_rollup_name(self, name: str) -> None:
         """Validate rollup name for security and consistency.

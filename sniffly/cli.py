@@ -218,8 +218,11 @@ def add_rollup(name, path):
         return
     
     # Add the rollup
-    cfg.add_rollup(name, path)
-    click.echo(f"✅ Added rollup '{name}' for path: {path}")
+    try:
+        cfg.add_rollup(name, path)
+        click.echo(f"✅ Added rollup '{name}' for path: {path}")
+    except Exception as e:
+        click.echo(f"Error: {e}")
 
 
 @rollup.command("list")
@@ -248,8 +251,11 @@ def remove_rollup(name):
         click.echo(f"Error: Rollup '{name}' not found.")
         return
     
-    cfg.remove_rollup(name)
-    click.echo(f"✅ Removed rollup '{name}'")
+    try:
+        cfg.remove_rollup(name)
+        click.echo(f"✅ Removed rollup '{name}'")
+    except Exception as e:
+        click.echo(f"Error: {e}")
 
 
 @rollup.command("show")
@@ -278,7 +284,7 @@ def show_rollup(name):
         else:
             click.echo("No child projects found.")
     except Exception as e:
-        click.echo(f"Warning: Could not load child projects: {e}")
+        click.echo(f"Error loading child projects: {e}")
 
 
 @cli.command(name="help")
@@ -352,3 +358,7 @@ def handle_first_run_setup():
     config_path = Path.home() / ".sniffly" / "config.json"
     config_path.parent.mkdir(exist_ok=True)
     config_path.write_text(json.dumps({"version": __version__, "first_run": datetime.now().isoformat()}))
+
+
+# Add rollup commands to main CLI
+cli.add_command(rollup)

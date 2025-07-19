@@ -1220,8 +1220,8 @@ async def get_projects(
                     else:
                         # Cache was evicted between status check and retrieval
                         project["in_cache"] = False
-                else:
-                    # Try file cache
+                elif not project.get("is_rollup"):
+                    # Try file cache (skip rollups since they don't have log_path)
                     cached_stats = cache_service.get_cached_stats(project["log_path"])
                     if cached_stats:
                         # Extract stats from nested structure (same as memory cache)
@@ -1400,7 +1400,10 @@ async def create_rollup(data: dict[str, str]):
             "message": f"Rollup '{name}' created successfully",
             "rollup": {"name": name, "path": path}
         })
-        
+    
+    except ValueError as e:
+        # Handle config validation errors as 400 Bad Request
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

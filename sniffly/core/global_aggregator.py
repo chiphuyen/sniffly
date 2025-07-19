@@ -39,6 +39,31 @@ class StatsAggregationUtils:
         """Update the earliest and latest timestamps from project stats."""
         from datetime import datetime
         
+        # Check for date range in overview section (normal stats structure)
+        overview = stats.get("overview", {})
+        date_range = overview.get("date_range", {})
+        
+        # Try overview.date_range.start first
+        start_date = date_range.get("start")
+        if start_date:
+            try:
+                first_date = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+                if not earliest_timestamp or first_date < earliest_timestamp:
+                    earliest_timestamp = first_date
+            except (ValueError, TypeError):
+                pass
+        
+        # Try overview.date_range.end
+        end_date = date_range.get("end")
+        if end_date:
+            try:
+                last_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                if not latest_timestamp or last_date > latest_timestamp:
+                    latest_timestamp = last_date
+            except (ValueError, TypeError):
+                pass
+        
+        # Also check for top-level fields (for compatibility with test data)
         if "first_message_date" in stats and stats["first_message_date"]:
             try:
                 first_date = datetime.fromisoformat(stats["first_message_date"].replace("Z", "+00:00"))
@@ -62,7 +87,12 @@ class StatsAggregationUtils:
         """Aggregate daily statistics data from a project."""
         from datetime import datetime
         
-        if "daily_stats" not in stats or not isinstance(stats["daily_stats"], dict):
+        if "daily_stats" not in stats:
+            logger.info("No daily_stats found for project in aggregation")
+            return
+        
+        if not isinstance(stats["daily_stats"], dict):
+            logger.warning("daily_stats is not a dict, skipping daily aggregation")
             return
         
         for date_str, day_data in stats["daily_stats"].items():
@@ -316,6 +346,7 @@ class GlobalStatsAggregator:
             "total_tools_used": 0,
             "commands_with_tools": 0,
             "search_tools_used": 0,
+            "command_details": [],
             
             # Tools
             "tools_usage": {},
@@ -380,6 +411,11 @@ class GlobalStatsAggregator:
         containers["total_tools_used"] += user_interactions.get("total_tools_used", 0)
         containers["commands_with_tools"] += user_interactions.get("commands_requiring_tools", 0)
         containers["search_tools_used"] += user_interactions.get("total_search_tools", 0)
+        
+        # Aggregate command details
+        command_details = user_interactions.get("command_details", [])
+        if command_details:
+            containers["command_details"].extend(command_details)
 
     def _aggregate_tools_stats(self, stats, containers):
         """Aggregate tools usage and error statistics."""
@@ -527,6 +563,7 @@ class GlobalStatsAggregator:
         # Calculate averages and rates
         total_commands = containers["total_commands"]
         avg_steps_per_command = containers["total_steps"] / total_commands if total_commands > 0 else 0
+        avg_tools_per_command = containers["total_tools_used"] / total_commands if total_commands > 0 else 0
         
         interruption_stats = containers["interruption_stats"]
         interruption_rate = (interruption_stats["interruptions"] / interruption_stats["commands"] * 100) if interruption_stats["commands"] > 0 else 0
@@ -556,6 +593,7 @@ class GlobalStatsAggregator:
         
         return {
             "avg_steps_per_command": avg_steps_per_command,
+            "avg_tools_per_command": avg_tools_per_command,
             "interruption_rate": interruption_rate,
             "tools_error_rates": tools_error_rates,
             "cache_hit_rate": cache_hit_rate,
@@ -610,6 +648,7 @@ class GlobalStatsAggregator:
                 "user_commands_analyzed": containers["total_commands"],
                 "avg_tokens_per_command": round((containers["total_input"] + containers["total_output"]) / containers["total_commands"], 1) if containers["total_commands"] > 0 else 0,
                 "avg_steps_per_command": round(metrics["avg_steps_per_command"], 2),
+                "avg_tools_per_command": round(metrics["avg_tools_per_command"], 2),
                 "tool_count_distribution": containers["tool_count_distributions"],
                 "model_distribution": containers["model_distributions"],
                 "interruption_rate": round(metrics["interruption_rate"], 1),
@@ -619,7 +658,8 @@ class GlobalStatsAggregator:
                 "commands_requiring_tools": containers["commands_with_tools"],
                 "total_tools_used": containers["total_tools_used"],
                 "total_search_tools": containers["search_tools_used"],
-                "search_tool_percentage": round((containers["search_tools_used"] / containers["total_tools_used"] * 100), 1) if containers["total_tools_used"] > 0 else 0
+                "search_tool_percentage": round((containers["search_tools_used"] / containers["total_tools_used"] * 100), 1) if containers["total_tools_used"] > 0 else 0,
+                "command_details": containers["command_details"]
             },
             "tools": {
                 "usage_counts": containers["tools_usage"],
@@ -673,7 +713,7 @@ class GlobalStatsAggregator:
                 }
                 for date_str, data in zip(
                     [d.isoformat() for d in (start_date + timedelta(days=i) for i in range(30))],
-                    daily_token_list
+                    daily_token_list, strict=False
                 )
             },
             "first_message_date": containers["earliest_timestamp"].isoformat() if containers["earliest_timestamp"] else None,
