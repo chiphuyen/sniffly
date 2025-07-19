@@ -1392,13 +1392,26 @@ async def create_rollup(data: dict[str, str]):
         if not os.path.exists(path) or not os.path.isdir(path):
             raise HTTPException(status_code=400, detail="Path does not exist or is not a directory")
         
+        # Check if the rollup will have any child projects
+        from sniffly.utils.log_finder import get_rollup_projects
+        potential_projects = get_rollup_projects(path)
+        project_count = len(potential_projects)
+        
         # Add rollup to config
         config.add_rollup(name, path)
         
+        # Include warning if no projects found
+        message = f"Rollup '{name}' created successfully"
+        if project_count == 0:
+            message += f" (Warning: No Claude projects found under '{path}'. This rollup will be empty until you create projects in that directory.)"
+        else:
+            message += f" with {project_count} project{'s' if project_count != 1 else ''}"
+        
         return JSONResponse({
             "status": "success",
-            "message": f"Rollup '{name}' created successfully",
-            "rollup": {"name": name, "path": path}
+            "message": message,
+            "rollup": {"name": name, "path": path},
+            "project_count": project_count
         })
     
     except ValueError as e:

@@ -4,8 +4,12 @@
 
 // Date and Time Calculations
 function calculateDateRange(statistics) {
-  // Handle null date range (common for rollups)
+  // Handle null date range (common for empty rollups)
   if (!statistics.overview.date_range.start || !statistics.overview.date_range.end) {
+    // Check if this is an empty rollup
+    if (statistics.is_rollup && statistics.child_project_count === 0) {
+      return 'No projects';
+    }
     return '0 days';
   }
   
@@ -22,7 +26,7 @@ function calculateDateRange(statistics) {
 }
 
 function calculateDaysInclusive(statistics) {
-  // Handle null date range (common for rollups)
+  // Handle null date range (common for empty rollups)
   if (!statistics.overview.date_range.start || !statistics.overview.date_range.end) {
     return 0;
   }
