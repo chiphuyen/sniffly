@@ -159,6 +159,32 @@
             </div>
             
             <div class="chart-container">
+                <h2>Step-Length Distribution
+                    <span class="tooltip-info-icon"
+                          onmouseover="showTooltip('step-length-dist-tooltip')"
+                          onmouseout="hideTooltip('step-length-dist-tooltip')">ⓘ
+                        <div id="step-length-dist-tooltip" class="tooltip-dark position-below tooltip-sm">
+                            Shows how many consecutive tool uses Claude makes before interruption
+                        </div>
+                    </span>
+                </h2>
+                <canvas id="step-length-distribution-chart"></canvas>
+            </div>
+            
+            <div class="chart-container">
+                <h2>Step-Length Metrics Over Time
+                    <span class="tooltip-info-icon"
+                          onmouseover="showTooltip('step-length-trend-tooltip')"
+                          onmouseout="hideTooltip('step-length-trend-tooltip')">ⓘ
+                        <div id="step-length-trend-tooltip" class="tooltip-dark position-below tooltip-sm">
+                            Tracks average and maximum consecutive tool uses over time
+                        </div>
+                    </span>
+                </h2>
+                <canvas id="step-length-trend-chart"></canvas>
+            </div>
+            
+            <div class="chart-container">
                 <h2>Error Rate Over Time
                     <span class="tooltip-info-icon"
                           onmouseover="showTooltip('error-rate-tooltip')"
