@@ -167,6 +167,7 @@ async function applyFilters() {
   sortMessages();
   displayMessages();
   updateTypeFilterCounts();
+  updateToolFilterCounts();
 }
 
 // Sort messages
@@ -514,6 +515,41 @@ function updateTypeFilterCounts() {
   
   // Restore the selected value
   typeFilter.value = currentValue;
+}
+
+// Update tool filter counts based on current filtered messages
+function updateToolFilterCounts() {
+  const toolFilter = document.getElementById('tool-filter');
+  if (!toolFilter) return;
+  
+  const currentValue = toolFilter.value;
+  
+  // Count tools used in filtered messages
+  const toolCounts = {};
+  
+  filteredMessages.forEach(message => {
+    if (message.tools && message.tools.length > 0) {
+      message.tools.forEach(tool => {
+        if (tool.name) {
+          toolCounts[tool.name] = (toolCounts[tool.name] || 0) + 1;
+        }
+      });
+    }
+  });
+  
+  // Update dropdown options
+  Array.from(toolFilter.options).forEach(option => {
+    if (option.value === '') return; // Skip "All Tools" option
+    
+    const toolName = option.value;
+    const count = toolCounts[toolName] || 0;
+    
+    // Update option text with new count
+    option.text = count > 0 ? `${toolName} (${count})` : toolName;
+  });
+  
+  // Restore the selected value
+  toolFilter.value = currentValue;
 }
 
 // Show message detail
