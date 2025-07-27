@@ -166,6 +166,7 @@ async function applyFilters() {
   currentPage = 1;
   sortMessages();
   displayMessages();
+  updateTypeFilterCounts();
 }
 
 // Sort messages
@@ -460,6 +461,59 @@ function updateMessagesPerPage() {
     currentPage = 1;
     displayMessages();
   }
+}
+
+// Update type filter counts based on current filtered messages
+function updateTypeFilterCounts() {
+  const typeFilter = document.getElementById('type-filter');
+  if (!typeFilter) return;
+  
+  const currentValue = typeFilter.value;
+  
+  // Count message types in filtered results
+  const typeCounts = {};
+  let toolResultCount = 0;
+  
+  // Always use filteredMessages to count (even if empty)
+  const messagesToCount = filteredMessages;
+  
+  messagesToCount.forEach(message => {
+    // Count tool results (these might also be counted in their original type)
+    if (message.has_tool_result) {
+      toolResultCount++;
+    }
+    
+    // Count the actual message type
+    if (message.type) {
+      typeCounts[message.type] = (typeCounts[message.type] || 0) + 1;
+    }
+  });
+  
+  // If we have tool results, add them to counts
+  if (toolResultCount > 0) {
+    typeCounts['tool_result'] = toolResultCount;
+  }
+  
+  // Update dropdown options
+  Array.from(typeFilter.options).forEach(option => {
+    if (option.value === '') return; // Skip "All Types" option
+    
+    const type = option.value;
+    let displayName = type;
+    
+    // Format display names
+    if (type === 'tool_result') displayName = 'tool result';
+    else if (type === 'summary') displayName = 'summary';
+    else if (type === 'compact_summary') displayName = 'compact summary';
+    
+    const count = typeCounts[type] || 0;
+    
+    // Update option text with new count
+    option.text = count > 0 ? `${displayName} (${count})` : displayName;
+  });
+  
+  // Restore the selected value
+  typeFilter.value = currentValue;
 }
 
 // Show message detail
