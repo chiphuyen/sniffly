@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sniffly"
-version = "0.1.4"
+version = "0.1.5"
 description = "Claude Code Analytics Dashboard"
 readme = "README.md"
 requires-python = ">=3.10"
