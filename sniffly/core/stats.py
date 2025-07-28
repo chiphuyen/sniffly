@@ -831,6 +831,123 @@ class StatisticsGenerator:
         # Calculate search tool percentage
         search_percentage = (total_search_tools / total_tools_used * 100) if total_tools_used > 0 else 0
 
+        # Calculate step-length metrics
+        # Step-length = number of consecutive commands that use tools
+        step_sequences = []
+        current_sequence_tools = []
+        current_sequence_length = 0
+        current_sequence_start = None
+
+        # Process commands to identify step sequences
+        for i, cmd in enumerate(user_command_details):
+            if cmd["is_interruption"]:
+                # End current sequence if exists
+                if current_sequence_length > 0:
+                    step_sequences.append(
+                        {
+                            "length": current_sequence_length,
+                            "tools": current_sequence_tools,
+                            "interrupted_by": "user",
+                            "timestamp": current_sequence_start,
+                        }
+                    )
+                    current_sequence_tools = []
+                    current_sequence_length = 0
+                    current_sequence_start = None
+            else:
+                # Non-interruption command
+                if cmd["tools_used"] > 0:
+                    # Start or continue sequence
+                    if current_sequence_length == 0:
+                        current_sequence_start = cmd["timestamp"]
+                    current_sequence_length += 1
+                    current_sequence_tools.extend(cmd["tool_names"])
+
+                    # Check if sequence ends
+                    if cmd.get("followed_by_interruption", False):
+                        # Sequence ends due to interruption
+                        step_sequences.append(
+                            {
+                                "length": current_sequence_length,
+                                "tools": current_sequence_tools,
+                                "interrupted_by": "user",
+                                "timestamp": current_sequence_start,
+                            }
+                        )
+                        current_sequence_tools = []
+                        current_sequence_length = 0
+                        current_sequence_start = None
+                    elif i == len(user_command_details) - 1:
+                        # Last command - sequence ends naturally
+                        step_sequences.append(
+                            {
+                                "length": current_sequence_length,
+                                "tools": current_sequence_tools,
+                                "interrupted_by": "completion",
+                                "timestamp": current_sequence_start,
+                            }
+                        )
+                    elif i + 1 < len(user_command_details) and user_command_details[i + 1]["tools_used"] == 0:
+                        # Next command has no tools - sequence ends
+                        step_sequences.append(
+                            {
+                                "length": current_sequence_length,
+                                "tools": current_sequence_tools,
+                                "interrupted_by": None,
+                                "timestamp": current_sequence_start,
+                            }
+                        )
+                        current_sequence_tools = []
+                        current_sequence_length = 0
+                        current_sequence_start = None
+                else:
+                    # Command with no tools - end any current sequence
+                    if current_sequence_length > 0:
+                        step_sequences.append(
+                            {
+                                "length": current_sequence_length,
+                                "tools": current_sequence_tools,
+                                "interrupted_by": None,
+                                "timestamp": current_sequence_start,
+                            }
+                        )
+                        current_sequence_tools = []
+                        current_sequence_length = 0
+                        current_sequence_start = None
+
+        # Calculate step-length statistics
+        average_step_length = 0.0
+        max_step_length = 0
+        min_step_length = 0
+        step_length_distribution = defaultdict(int)
+
+        if step_sequences:
+            lengths = [seq["length"] for seq in step_sequences]
+            average_step_length = sum(lengths) / len(lengths)
+            max_step_length = max(lengths)
+            min_step_length = min(lengths)
+
+            # Create distribution
+            for length in lengths:
+                if length >= 10:
+                    step_length_distribution["10+"] += 1
+                else:
+                    step_length_distribution[str(length)] += 1
+
+        # Calculate step length by tool type (optional enhancement)
+        step_length_by_tool = defaultdict(lambda: {"lengths": [], "frequency": 0})
+        for seq in step_sequences:
+            for tool in set(seq["tools"]):  # Unique tools in sequence
+                step_length_by_tool[tool]["lengths"].append(seq["length"])
+                step_length_by_tool[tool]["frequency"] += 1
+
+        # Compute averages for each tool
+        for _, data in step_length_by_tool.items():
+            if data["lengths"]:
+                data["average_length"] = sum(data["lengths"]) / len(data["lengths"])
+                data["max_length"] = max(data["lengths"])
+                del data["lengths"]  # Remove raw data, keep only stats
+
         return {
             "real_user_messages": len(real_user_messages),
             "user_commands_analyzed": user_commands,
@@ -856,6 +973,13 @@ class StatisticsGenerator:
             "tool_interruption_rates": tool_interruption_rates,
             # Model distribution
             "model_distribution": dict(model_distribution),
+            # Step-length metrics
+            "average_step_length": round(average_step_length, 2),
+            "max_step_length": max_step_length,
+            "min_step_length": min_step_length,
+            "step_length_distribution": dict(step_length_distribution),
+            "step_sequences": step_sequences,
+            "step_length_by_tool": dict(step_length_by_tool),
         }
 
     def _analyze_cache(self, messages: list[dict]) -> dict:

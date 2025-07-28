@@ -459,6 +459,9 @@ async function initializeCharts(statistics) {
   // Interruption Rate Chart
   createInterruptionRateChart(statistics);
   
+  // Step-Length Metrics Charts
+  createStepLengthCharts(statistics);
+  
   // Error Rate Chart
   createErrorRateChart(statistics);
 }
@@ -1787,4 +1790,244 @@ function renderCostChart(startDate, endDate) {
       }
     }
   });
+}
+// Step-Length Metrics Charts for Sniffly
+// This module contains the implementation for step-length visualization
+
+// Create step-length metrics charts
+function createStepLengthCharts(statistics) {
+  const userInteractions = statistics.user_interactions || {};
+  const stepSequences = userInteractions.step_sequences || [];
+  const distribution = userInteractions.step_length_distribution || {};
+  
+  // 1. Step-Length Distribution Chart (Bar Chart)
+  if (Object.keys(distribution).length > 0) {
+    // Sort keys for proper display order
+    const sortedKeys = Object.keys(distribution).sort((a, b) => {
+      // Handle "10+" specially
+      if (a === "10+") return 1;
+      if (b === "10+") return -1;
+      return parseInt(a) - parseInt(b);
+    });
+    
+    const distributionData = sortedKeys.map(key => distribution[key]);
+    
+    chartInstances.stepLengthDist = new Chart(document.getElementById('step-length-distribution-chart'), {
+      type: 'bar',
+      data: {
+        labels: sortedKeys.map(key => key === "10+" ? "10+" : `${key}`),
+        datasets: [{
+          label: 'Number of Sequences',
+          data: distributionData,
+          backgroundColor: '#48bb78', // Green color for positive metric
+          borderColor: '#38a169',
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          title: {
+            display: false
+          },
+          legend: {
+            display: false
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const value = context.raw;
+                const total = distributionData.reduce((a, b) => a + b, 0);
+                const percentage = ((value / total) * 100).toFixed(1);
+                return `${value} sequences (${percentage}%)`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: {
+              display: true,
+              text: 'Consecutive Tool Uses'
+            }
+          },
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Number of Sequences'
+            },
+            ticks: {
+              stepSize: 1
+            }
+          }
+        }
+      }
+    });
+  } else {
+    // Hide chart if no data
+    const chartElement = document.getElementById('step-length-distribution-chart');
+    if (chartElement && chartElement.parentElement) {
+      chartElement.parentElement.style.display = 'none';
+    }
+  }
+  
+  // 2. Step-Length Metrics Over Time (Line Chart)
+  if (stepSequences.length > 0) {
+    // Sort sequences by timestamp
+    const sortedSequences = stepSequences.filter(seq => seq.timestamp).sort((a, b) => 
+      new Date(a.timestamp) - new Date(b.timestamp)
+    );
+    
+    if (sortedSequences.length > 0) {
+      // Get time range
+      const startTime = new Date(sortedSequences[0].timestamp);
+      const endTime = new Date(sortedSequences[sortedSequences.length - 1].timestamp);
+      const totalDuration = endTime - startTime;
+      const totalDays = totalDuration / (24 * 60 * 60 * 1000);
+      
+      // Determine interval
+      const useHourlyInterval = totalDays < 10;
+      
+      // Create time buckets
+      const buckets = new Map();
+      
+      // Helper to get bucket key
+      const getBucketKey = (date) => {
+        if (useHourlyInterval) {
+          const hours = Math.floor(date.getHours() / 4) * 4;
+          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}-${String(hours).padStart(2, '0')}`;
+        } else {
+          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        }
+      };
+      
+      // Group sequences into buckets
+      sortedSequences.forEach(seq => {
+        const seqDate = new Date(seq.timestamp);
+        const bucketKey = getBucketKey(seqDate);
+        
+        if (!buckets.has(bucketKey)) {
+          buckets.set(bucketKey, {
+            sequences: [],
+            totalLength: 0,
+            count: 0
+          });
+        }
+        
+        const bucket = buckets.get(bucketKey);
+        bucket.sequences.push(seq);
+        bucket.totalLength += seq.length;
+        bucket.count++;
+      });
+      
+      // Sort bucket keys and calculate data
+      const sortedBucketKeys = Array.from(buckets.keys()).sort();
+      const bucketData = sortedBucketKeys.map(bucketKey => {
+        const bucket = buckets.get(bucketKey);
+        return {
+          timestamp: bucketKey,
+          avgLength: bucket.totalLength / bucket.count,
+          maxLength: Math.max(...bucket.sequences.map(s => s.length)),
+          count: bucket.count
+        };
+      });
+      
+      // Limit to last 60 data points
+      const limitedBucketData = bucketData.slice(-60);
+      
+      // Format labels
+      const formatLabel = (timestamp) => {
+        let date;
+        if (useHourlyInterval) {
+          const [year, month, day, hour] = timestamp.split('-').map(Number);
+          date = new Date(year, month - 1, day, hour);
+          return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric',
+            hour: 'numeric',
+            hour12: true
+          });
+        } else {
+          const [year, month, day] = timestamp.split('-').map(Number);
+          date = new Date(year, month - 1, day);
+          return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+          });
+        }
+      };
+      
+      // Create arrays for chart
+      const labels = limitedBucketData.map(d => formatLabel(d.timestamp));
+      const avgStepLengths = limitedBucketData.map(d => d.avgLength.toFixed(2));
+      const maxStepLengths = limitedBucketData.map(d => d.maxLength);
+      
+      // Create sparse labels to avoid clutter
+      const sparseLabels = labels.map((label, index) => {
+        if (labels.length <= 15) {
+          return label;
+        } else {
+          const step = Math.ceil(labels.length / 15);
+          if (index % step === 0 || index === labels.length - 1) {
+            return label;
+          }
+          return '';
+        }
+      });
+      
+      chartInstances.stepLengthTrend = makeDynamicIntervalChart({
+        canvasId: 'step-length-trend-chart',
+        labels: sparseLabels,
+        datasets: [
+          { 
+            label: 'Average Step Length', 
+            data: avgStepLengths,
+            borderColor: '#48bb78',
+            backgroundColor: 'rgba(72, 187, 120, 0.1)',
+            tension: 0.1, 
+            yAxisID: 'y-length' 
+          },
+          { 
+            label: 'Max Step Length', 
+            data: maxStepLengths,
+            ...withColor('blue'), 
+            tension: 0.1, 
+            yAxisID: 'y-length',
+            hidden: true 
+          }
+        ],
+        yScales: {
+          'y-length': {
+            type: 'linear',
+            position: 'left',
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Step Length'
+            }
+          }
+        },
+        tooltipExtra: {
+          afterLabel(ctx) {
+            const i = ctx.dataIndex;
+            const bucket = limitedBucketData[i];
+            if (ctx.datasetIndex === 0) {
+              return `${bucket.count} sequences in this period`;
+            }
+            return '';
+          }
+        },
+        limitedBucketData: limitedBucketData,
+        useHourlyInterval: useHourlyInterval
+      });
+    }
+  } else {
+    // Hide chart if no data
+    const chartElement = document.getElementById('step-length-trend-chart');
+    if (chartElement && chartElement.parentElement) {
+      chartElement.parentElement.style.display = 'none';
+    }
+  }
 }
