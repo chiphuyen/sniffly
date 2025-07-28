@@ -330,6 +330,7 @@ class ClaudeLogProcessor:
         for msg in final_messages:
             self.running_stats["message_counts"][msg["type"]] += 1
 
+
         # Use the StatisticsGenerator for all statistics
         stats_generator = StatisticsGenerator(self.log_directory, self.running_stats)
         statistics = stats_generator.generate_statistics(final_messages, timezone_offset_minutes)
@@ -508,9 +509,8 @@ class ClaudeLogProcessor:
                             message["error"] = True
 
                         if result:
-                            truncated = result[:200] + "..." if len(result) > 200 else result
                             prefix = "[Tool Error: " if is_error else "[Tool Result: "
-                            content_parts.append(f"{prefix}{truncated}]")
+                            content_parts.append(f"{prefix}{result}]")
                         else:
                             content_parts.append("[Tool Result: Empty/Success]")
 
@@ -585,10 +585,6 @@ class ClaudeLogProcessor:
             if "stdout" in tool_result and tool_result["stdout"]:
                 stdout = tool_result["stdout"][:100]
                 result_parts.append(f"Output: {stdout}{'...' if len(tool_result['stdout']) > 100 else ''}")
-
-            if "error" in tool_result:
-                message["error"] = True
-                result_parts.append(f"Error: {tool_result['error']}")
 
             if tool_result.get("interrupted"):
                 result_parts.append("Interrupted by user")

@@ -58,6 +58,7 @@ ERROR_PATTERNS: dict[str, list[str]] = {
     ],
     # ───────────────────── runtime / environment ─────────────────────
     "Tool Not Found": [r"command not found"],
+    "Wrong Tool": [r"File is a Jupyter Notebook. Use the NotebookRead to read this file."],
     "Code Runtime Error": [
         r"Cannot find module",
         r"Traceback",
@@ -72,6 +73,10 @@ ERROR_PATTERNS: dict[str, list[str]] = {
         r"null \(null\) has no keys",
         r"kill: %1: no such job",
         r"jq: error",
+    ],
+    # ───────────────────────── notebook cells not found ───────────────────────────
+    "Notebook Cell Not Found": [
+        r'Cell with ID "[a-z0-9]+" not found in notebook'
     ],
     # ───────────────────────── other tools ───────────────────────────
     "Other Tool Errors": [r"\[Details] Error: Error"],

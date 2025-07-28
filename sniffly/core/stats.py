@@ -455,7 +455,6 @@ class StatisticsGenerator:
     def _analyze_errors(self, messages: list[dict]) -> dict:
         """Analyze error patterns."""
         error_messages = [msg for msg in messages if msg["error"]]
-
         # Categorize errors by type
         error_categories = defaultdict(int)
 
@@ -501,8 +500,7 @@ class StatisticsGenerator:
                 is_error = False
                 if i + 1 < len(messages):
                     next_msg = messages[i + 1]
-                    if next_msg.get("error", False):
-                        is_error = True
+                    is_error = next_msg["error"]
 
                 assistant_details.append({"timestamp": msg["timestamp"], "is_error": is_error})
 
