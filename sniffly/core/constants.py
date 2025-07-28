@@ -73,6 +73,7 @@ ERROR_PATTERNS: dict[str, list[str]] = {
         r"null \(null\) has no keys",
         r"kill: %1: no such job",
         r"jq: error",
+        r"InputValidationError",
     ],
     # ───────────────────────── notebook cells not found ───────────────────────────
     "Notebook Cell Not Found": [
