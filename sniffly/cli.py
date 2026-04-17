@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -18,6 +19,18 @@ from .utils.logging import setup_logging
 # Set up logging
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+def _is_port_available(host, port):
+    """Check whether a TCP port can be bound on the given host."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if sys.platform != "win32":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+    except OSError:
+        return False
+    return True
 
 
 def _setup_event_loop_policy():
@@ -82,6 +95,15 @@ def init(port, host, no_browser, clear_cache):
     # Determine if we should open browser
     auto_browser = cfg.get("auto_browser")
     should_open_browser = auto_browser and not no_browser
+
+    # Check the port is actually free before claiming the dashboard is up
+    if not _is_port_available(host, port):
+        click.echo(
+            f"\n❌ Port {port} on {host} is already in use. "
+            f"Pass --port to pick another, or stop the process using it.\n",
+            err=True,
+        )
+        sys.exit(1)
 
     # Set up optimized event loop for better async performance
     _setup_event_loop_policy()
