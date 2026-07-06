@@ -4,6 +4,8 @@ let filteredProjects = [];
 let globalStats = null;
 let tokenUsageChart = null;
 let costTrendChart = null;
+let gitActivityChart = null;
+let currentGitDays = 365;
 let lastChartDataHash = null; // Track last chart data to detect changes
 
 // Date range pickers
@@ -37,6 +39,24 @@ document.addEventListener('DOMContentLoaded', async function() {
     
   // Load projects immediately (Phase 1)
   await loadProjects();
+
+  // Load local git-based analytics for non-Claude workflows.
+  loadGitActivity(currentGitDays);
+
+  const gitRangeSelect = document.getElementById('git-range-select');
+  if (gitRangeSelect) {
+    gitRangeSelect.addEventListener('change', () => {
+      currentGitDays = parseInt(gitRangeSelect.value, 10);
+      loadGitActivity(currentGitDays);
+    });
+  }
+
+  const gitRefreshButton = document.getElementById('git-refresh-button');
+  if (gitRefreshButton) {
+    gitRefreshButton.addEventListener('click', () => {
+      loadGitActivity(currentGitDays, true);
+    });
+  }
     
   // Load global stats in background (Phase 2)
   loadGlobalStats();
@@ -1081,6 +1101,182 @@ function renderCostTrendChart(data) {
               });
               return 'Total: $' + sum.toFixed(4);
             }
+          }
+        }
+      }
+    }
+  });
+}
+
+// Load and render git-based activity for local Copilot workflow insights
+async function loadGitActivity(days = 30, forceRefresh = false) {
+  try {
+    const refreshButton = document.getElementById('git-refresh-button');
+    const originalButtonText = refreshButton ? refreshButton.textContent : '';
+    if (refreshButton && forceRefresh) {
+      refreshButton.textContent = 'Refreshing...';
+      refreshButton.disabled = true;
+    }
+
+    const response = await fetch(`/api/git-activity?days=${days}`);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    updateGitActivityUI(data);
+
+    if (refreshButton && forceRefresh) {
+      refreshButton.textContent = 'Done';
+      setTimeout(() => {
+        refreshButton.textContent = originalButtonText;
+        refreshButton.disabled = false;
+      }, 800);
+    }
+  } catch (error) {
+    console.warn('[Overview] Git activity unavailable:', error);
+
+    const summary = document.getElementById('git-activity-summary');
+    const repoStatus = document.getElementById('git-repo-status');
+    const authors = document.getElementById('git-authors');
+    const files = document.getElementById('git-top-files');
+    const fileTypes = document.getElementById('git-file-types');
+    const recentCommits = document.getElementById('git-recent-commits');
+    if (summary) {
+      summary.textContent = 'Git activity unavailable for this environment.';
+    }
+    if (repoStatus) {
+      repoStatus.textContent = 'Branch/worktree: -';
+    }
+    if (authors) {
+      authors.textContent = 'Top authors: -';
+    }
+    if (files) {
+      files.textContent = 'Top files: -';
+    }
+    if (fileTypes) {
+      fileTypes.textContent = 'Top file types: -';
+    }
+    if (recentCommits) {
+      recentCommits.textContent = 'Recent commits: -';
+    }
+
+    const refreshButton = document.getElementById('git-refresh-button');
+    if (refreshButton && forceRefresh) {
+      refreshButton.textContent = 'Refresh Git';
+      refreshButton.disabled = false;
+    }
+  }
+}
+
+function updateGitActivityUI(data) {
+  const commitsTotalEl = document.getElementById('git-commits-total');
+  const activeDaysEl = document.getElementById('git-active-days');
+  const filesChangedEl = document.getElementById('git-files-changed');
+  const repoStatusEl = document.getElementById('git-repo-status');
+  const authorsEl = document.getElementById('git-authors');
+  const topFilesEl = document.getElementById('git-top-files');
+  const fileTypesEl = document.getElementById('git-file-types');
+  const recentCommitsEl = document.getElementById('git-recent-commits');
+
+  if (commitsTotalEl) {
+    commitsTotalEl.textContent = `Commits (${data.period_days}d): ${formatNumber(data.total_commits || 0)}`;
+  }
+  if (activeDaysEl) {
+    activeDaysEl.textContent = `Active days: ${formatNumber(data.active_days || 0)}`;
+  }
+  if (filesChangedEl) {
+    const fileChanges = data.totals && data.totals.files_changed ? data.totals.files_changed : 0;
+    filesChangedEl.textContent = `Files changed: ${formatNumber(fileChanges)}`;
+  }
+
+  if (repoStatusEl) {
+    const repo = data.repository || {};
+    const worktree = data.worktree || {};
+    repoStatusEl.textContent = `Branch/worktree: ${repo.branch || 'unknown'} (↑${repo.ahead_by || 0} ↓${repo.behind_by || 0}) • staged ${worktree.staged_changes || 0} • unstaged ${worktree.unstaged_changes || 0} • untracked ${worktree.untracked_files || 0}`;
+  }
+
+  if (authorsEl) {
+    const authors = (data.top_authors || [])
+      .slice(0, 3)
+      .map(author => `${author.identity} (${author.commits})`)
+      .join(' • ');
+    authorsEl.textContent = `Top authors: ${authors || '-'}`;
+  }
+
+  if (topFilesEl) {
+    const topFiles = (data.top_files || [])
+      .slice(0, 3)
+      .map(file => `${file.path} (${file.churn})`)
+      .join(' • ');
+    topFilesEl.textContent = `Top files: ${topFiles || '-'}`;
+  }
+
+  if (fileTypesEl) {
+    const topFileTypes = (data.top_file_types || [])
+      .slice(0, 4)
+      .map(item => `${item.extension} (${item.churn})`)
+      .join(' • ');
+    fileTypesEl.textContent = `Top file types: ${topFileTypes || '-'}`;
+  }
+
+  if (recentCommitsEl) {
+    const recentCommits = (data.recent_commits || [])
+      .slice(0, 3)
+      .map(commit => `${commit.sha} ${commit.subject}`)
+      .join(' • ');
+    recentCommitsEl.textContent = `Recent commits: ${recentCommits || '-'}`;
+  }
+
+  renderGitActivityChart(data.commits_by_day || []);
+}
+
+function renderGitActivityChart(data) {
+  const canvas = document.getElementById('git-activity-chart');
+  if (!canvas) {return;}
+
+  const ctx = canvas.getContext('2d');
+  if (gitActivityChart) {
+    gitActivityChart.destroy();
+  }
+
+  const labels = data.map(d => {
+    const [year, month, day] = d.date.split('-');
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${monthNames[parseInt(month, 10) - 1]} ${parseInt(day, 10)}`;
+  });
+
+  gitActivityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Commits per day',
+          data: data.map(d => d.count || 0),
+          borderColor: '#2c7a7b',
+          backgroundColor: 'rgba(44, 122, 123, 0.12)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.25
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      scales: {
+        x: {
+          grid: { display: false }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            precision: 0
           }
         }
       }
