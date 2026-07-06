@@ -7,7 +7,9 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1094,6 +1096,249 @@ async def get_global_stats():
 
         traceback.print_exc()
         return JSONResponse({"error": f"Failed to get global stats: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/git-activity")
+async def get_git_activity(days: int = 30, repo_path: str | None = None):
+    """Get local git activity for a repository to support Copilot workflow analytics."""
+    try:
+        # Keep query bounded to prevent very expensive log scans.
+        days = max(1, min(days, 365))
+        target_path = repo_path or os.getcwd()
+
+        # Resolve to repo root and fail clearly if path is not in a git repo.
+        root_proc = subprocess.run(
+            ["git", "-C", target_path, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if root_proc.returncode != 0:
+            raise HTTPException(status_code=400, detail=f"Not a git repository: {target_path}")
+
+        repo_root = root_proc.stdout.strip()
+        since_arg = f"{days}.days"
+
+        branch_proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        current_branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else "unknown"
+
+        status_proc = subprocess.run(
+            ["git", "-C", repo_root, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status_proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to read git worktree status")
+
+        staged_changes = 0
+        unstaged_changes = 0
+        untracked_files = 0
+        for line in status_proc.stdout.splitlines():
+            if not line:
+                continue
+            if line.startswith("??"):
+                untracked_files += 1
+                continue
+
+            if len(line) >= 2:
+                staged_flag = line[0]
+                unstaged_flag = line[1]
+                if staged_flag != " ":
+                    staged_changes += 1
+                if unstaged_flag != " ":
+                    unstaged_changes += 1
+
+        upstream_proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        ahead_by = 0
+        behind_by = 0
+        if upstream_proc.returncode == 0:
+            parts = upstream_proc.stdout.strip().split()
+            if len(parts) == 2:
+                try:
+                    behind_by = int(parts[0])
+                    ahead_by = int(parts[1])
+                except ValueError:
+                    ahead_by = 0
+                    behind_by = 0
+
+        commits_proc = subprocess.run(
+            ["git", "-C", repo_root, "log", f"--since={since_arg}", "--pretty=format:%ad", "--date=short"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if commits_proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to read git commit history")
+
+        dates = [line.strip() for line in commits_proc.stdout.splitlines() if line.strip()]
+        commits_by_day_map: dict[str, int] = {}
+        for date in dates:
+            commits_by_day_map[date] = commits_by_day_map.get(date, 0) + 1
+
+        commits_by_day = [
+            {"date": date, "count": commits_by_day_map[date]} for date in sorted(commits_by_day_map.keys())
+        ]
+
+        weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekday_counts = [0, 0, 0, 0, 0, 0, 0]
+        for date, count in commits_by_day_map.items():
+            try:
+                weekday_index = datetime.strptime(date, "%Y-%m-%d").weekday()
+                weekday_counts[weekday_index] += count
+            except ValueError:
+                continue
+        weekday_distribution = [
+            {"day": weekday_labels[idx], "count": weekday_counts[idx]} for idx in range(7)
+        ]
+
+        authors_proc = subprocess.run(
+            ["git", "-C", repo_root, "shortlog", "-sne", f"--since={since_arg}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if authors_proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to read git author history")
+
+        top_authors = []
+        for line in authors_proc.stdout.splitlines():
+            cleaned = line.strip()
+            if not cleaned:
+                continue
+            parts = cleaned.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            try:
+                commit_count = int(parts[0].strip())
+            except ValueError:
+                continue
+            identity = parts[1].strip()
+            top_authors.append({"identity": identity, "commits": commit_count})
+
+        numstat_proc = subprocess.run(
+            ["git", "-C", repo_root, "log", f"--since={since_arg}", "--numstat", "--pretty=tformat:"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if numstat_proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to read git file statistics")
+
+        total_insertions = 0
+        total_deletions = 0
+        files_changed = 0
+        file_churn: dict[str, int] = {}
+        file_type_churn: dict[str, int] = {}
+
+        for raw_line in numstat_proc.stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+
+            add_raw, del_raw, path = parts[0], parts[1], parts[2]
+            # Binary diffs can show '-' in numstat output.
+            added = int(add_raw) if add_raw.isdigit() else 0
+            deleted = int(del_raw) if del_raw.isdigit() else 0
+
+            total_insertions += added
+            total_deletions += deleted
+            files_changed += 1
+            file_churn[path] = file_churn.get(path, 0) + added + deleted
+
+            ext = Path(path).suffix.lower() or "[no_ext]"
+            file_type_churn[ext] = file_type_churn.get(ext, 0) + added + deleted
+
+        top_files = [
+            {"path": path, "churn": churn}
+            for path, churn in sorted(file_churn.items(), key=lambda item: item[1], reverse=True)[:10]
+        ]
+        top_file_types = [
+            {"extension": ext, "churn": churn}
+            for ext, churn in sorted(file_type_churn.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+
+        recent_commits_proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_root,
+                "log",
+                f"--since={since_arg}",
+                "--pretty=format:%h|%ad|%s",
+                "--date=short",
+                "-n",
+                "5",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if recent_commits_proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to read recent commits")
+
+        recent_commits = []
+        for line in recent_commits_proc.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("|", 2)
+            if len(parts) != 3:
+                continue
+            recent_commits.append({"sha": parts[0], "date": parts[1], "subject": parts[2]})
+
+        total_commits = len(dates)
+        active_days = len(commits_by_day_map)
+
+        return JSONResponse(
+            {
+                "repo_root": repo_root,
+                "repo_name": Path(repo_root).name,
+                "period_days": days,
+                "total_commits": total_commits,
+                "active_days": active_days,
+                "avg_commits_per_active_day": round(total_commits / active_days, 2) if active_days else 0,
+                "repository": {
+                    "branch": current_branch,
+                    "ahead_by": ahead_by,
+                    "behind_by": behind_by,
+                },
+                "worktree": {
+                    "staged_changes": staged_changes,
+                    "unstaged_changes": unstaged_changes,
+                    "untracked_files": untracked_files,
+                },
+                "totals": {
+                    "insertions": total_insertions,
+                    "deletions": total_deletions,
+                    "files_changed": files_changed,
+                    "net_lines": total_insertions - total_deletions,
+                },
+                "commits_by_day": commits_by_day,
+                "weekday_distribution": weekday_distribution,
+                "top_authors": top_authors[:5],
+                "top_files": top_files,
+                "top_file_types": top_file_types,
+                "recent_commits": recent_commits,
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to get git activity: {str(e)}"}, status_code=500)
 
 
 # Pricing endpoints
