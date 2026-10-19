@@ -1082,10 +1082,11 @@ async def get_global_stats():
 
         # Create aggregator and get global stats
         aggregator = GlobalStatsAggregator(memory_cache, cache_service)
-        global_stats = await aggregator.get_global_stats(projects)
+        max_date_range_days = config.get("max_date_range_days")
+        global_stats = await aggregator.get_global_stats(projects, days=max_date_range_days)
 
         # Add configuration
-        global_stats["config"] = {"max_date_range_days": config.get("max_date_range_days")}
+        global_stats["config"] = {"max_date_range_days": max_date_range_days}
 
         return JSONResponse(global_stats)
 

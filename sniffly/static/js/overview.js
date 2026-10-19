@@ -808,7 +808,7 @@ function updateGlobalStatsUI(stats) {
   const cost30Days = document.getElementById('total-cost-30-days');
   if (cost30Days) {
     if (hasMoreThan30Days && stats.daily_costs) {
-      const thirtyDayTotal = stats.daily_costs.reduce((sum, day) => sum + (day.cost || 0), 0);
+      const thirtyDayTotal = stats.daily_costs.slice(-30).reduce((sum, day) => sum + (day.cost || 0), 0);
       cost30Days.textContent = `30-day: ${formatCost(thirtyDayTotal)}`;
       cost30Days.style.display = 'inline';
       // Show separator if 30-day is visible
@@ -841,7 +841,7 @@ function updateGlobalStatsUI(stats) {
   const tokens30Days = document.getElementById('token-30-days');
   if (tokens30Days) {
     if (hasMoreThan30Days && stats.daily_token_usage) {
-      const thirtyDayTokens = stats.daily_token_usage.reduce((acc, day) => {
+      const thirtyDayTokens = stats.daily_token_usage.slice(-30).reduce((acc, day) => {
         acc.input += day.input || 0;
         acc.output += day.output || 0;
         return acc;

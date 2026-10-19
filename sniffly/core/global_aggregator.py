@@ -25,12 +25,13 @@ class GlobalStatsAggregator:
         self.memory_cache = memory_cache
         self.file_cache = file_cache
 
-    async def get_global_stats(self, projects: list[dict]) -> dict:
+    async def get_global_stats(self, projects: list[dict], days: int = 30) -> dict:
         """
         Aggregate statistics across all projects.
 
         Args:
             projects: List of project dictionaries from get_all_projects_with_metadata()
+            days: Chart history length; at least 30 days are retained for summary cards
 
         Returns:
             Dictionary containing aggregated global statistics
@@ -38,13 +39,13 @@ class GlobalStatsAggregator:
         logger.debug(f"Starting global stats aggregation for {len(projects)} projects")
 
         # Initialize aggregated data
-        # IMPORTANT: We track both all-time totals and 30-day totals separately:
+        # IMPORTANT: We track both all-time totals and daily totals separately:
         # - All-time totals come from project overview stats (includes ALL messages)
-        # - 30-day totals come from summing daily_stats (only includes messages with timestamps)
-        # This may cause slight discrepancies for users with <30 days of usage if some messages lack timestamps
+        # - Daily totals come from daily_stats (only includes messages with timestamps)
+        # Totals may differ if some messages lack timestamps or fall outside the chart window.
 
         daily_tokens = {}  # date -> {input: 0, output: 0, cache_read: 0}
-        daily_costs = {}  # date -> cost (last 30 days only)
+        daily_costs = {}  # date -> cost within the chart window
         daily_cost_breakdown = {}  # date -> {input: 0, output: 0, cache: 0}
 
         # All-time totals (from project overviews)
@@ -58,9 +59,10 @@ class GlobalStatsAggregator:
         earliest_timestamp = None
         latest_timestamp = None
 
-        # Get the last 30 days for chart data
+        # Keep enough history for both configurable charts and fixed 30-day summaries.
+        history_days = max(30, days)
         end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=29)
+        start_date = end_date - timedelta(days=history_days - 1)
 
         # Initialize daily data with zeros
         current_date = start_date
@@ -94,7 +96,7 @@ class GlobalStatsAggregator:
                 # This ensures all-time cost includes messages without timestamps
                 total_cost_all_time += overview.get("total_cost", 0)
 
-                # Aggregate daily stats for last 30 days
+                # Aggregate daily stats within the chart window
                 if "daily_stats" in stats:
                     if not isinstance(stats["daily_stats"], dict):
                         logger.warning(
@@ -159,8 +161,8 @@ class GlobalStatsAggregator:
             else:
                 logger.debug(f"Project {project_name}: No stats available")
 
-        # Calculate 30-day total cost for logging
-        total_cost_30_days = sum(daily_costs.values())
+        # Calculate chart-window total cost for logging
+        total_cost_window = sum(daily_costs.values())
 
         # Convert daily data to list format for charts
         daily_token_list = []
@@ -187,7 +189,7 @@ class GlobalStatsAggregator:
         logger.debug(
             f"Global stats aggregation complete: {len(projects)} projects, "
             f"{total_commands} commands, {total_input + total_output} total tokens, "
-            f"${total_cost_all_time:.2f} all-time cost, ${total_cost_30_days:.2f} 30-day cost"
+            f"${total_cost_all_time:.2f} all-time cost, ${total_cost_window:.2f} {history_days}-day cost"
         )
 
         return {
@@ -201,9 +203,9 @@ class GlobalStatsAggregator:
             "total_cache_write_tokens": total_cache_write,
             "total_commands": total_commands,
             "total_cost": total_cost_all_time,  # From overview.total_cost, not sum of daily
-            # 30-day data (only includes messages with timestamps)
-            "daily_token_usage": daily_token_list,  # Last 30 days
-            "daily_costs": daily_cost_list,  # Last 30 days with breakdown
+            # Chart-window data (only includes messages with timestamps)
+            "daily_token_usage": daily_token_list,
+            "daily_costs": daily_cost_list,
         }
 
     async def _get_project_stats(self, project: dict) -> dict | None:
