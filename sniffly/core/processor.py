@@ -270,11 +270,12 @@ class ClaudeLogProcessor:
         # Phase 2: Load and process all messages
         all_messages = []
         session_metadata = {}
+        seen_assistant_uuids: set[str] = set()
 
         for file_index, file_path in enumerate(files):
             session_id = os.path.basename(file_path).replace(".jsonl", "")
             session_messages = []
-            self._process_file(file_path, session_id, session_messages)
+            self._process_file(file_path, session_id, session_messages, seen_assistant_uuids)
 
             # Add session metadata
             session_metadata[session_id] = {
@@ -337,7 +338,13 @@ class ClaudeLogProcessor:
 
         return final_messages, statistics
 
-    def _process_file(self, file_path: str, session_id: str, raw_messages: list[dict]):
+    def _process_file(
+        self,
+        file_path: str,
+        session_id: str,
+        raw_messages: list[dict],
+        seen_assistant_uuids: set[str] | None = None,
+    ):
         """Process a single log file and extract messages.
 
         Handles different message types:
@@ -350,7 +357,10 @@ class ClaudeLogProcessor:
             file_path: Path to the JSONL file
             session_id: Extracted session ID from filename
             raw_messages: List to append extracted messages to
+            seen_assistant_uuids: Assistant entry UUIDs already processed in this refresh
         """
+        if seen_assistant_uuids is None:
+            seen_assistant_uuids = set()
         last_model_seen = "N/A"  # Track last model in session for summaries
 
         with open(file_path, "rb") as f:  # Binary mode for orjson
@@ -395,6 +405,12 @@ class ClaudeLogProcessor:
                             # Track model for assistant messages
                             if message["type"] == "assistant" and message.get("model") and message["model"] != "N/A":
                                 last_model_seen = message["model"]
+                            # Continued sessions can copy entries already loaded from another file.
+                            # Skip them before both streaming merges and running statistics.
+                            if message["type"] == "assistant" and message["uuid"]:
+                                if message["uuid"] in seen_assistant_uuids:
+                                    continue
+                                seen_assistant_uuids.add(message["uuid"])
                             raw_messages.append(message)
                             self._update_running_stats(message)
 
